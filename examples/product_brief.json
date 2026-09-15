@@ -1,0 +1,10 @@
+{
+  "name": "USB-C Portable Blender",
+  "brand": "Acme",
+  "attributes": ["380ml", "BPA-free Tritan", "USB-C rechargeable", "White"],
+  "features": ["6 blades", "self-cleaning", "leak-proof lid", "fits car cup holder"],
+  "audience": "travelers and office workers",
+  "useCases": ["smoothies", "protein shakes", "travel"],
+  "included": ["blender cup", "USB-C cable", "lid"],
+  "tone": "friendly"
+}

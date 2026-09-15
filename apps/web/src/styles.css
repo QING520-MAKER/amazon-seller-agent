@@ -1,0 +1,131 @@
+:root {
+  font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+  color: #172033;
+  background: #fff;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+}
+* { box-sizing: border-box; }
+body { margin: 0; }
+#root, .ant-app { height: 100%; }
+.workbench { display: flex; height: 100dvh; min-height: 500px; overflow: hidden; }
+.sidebar { width: 248px; flex: 0 0 248px; display: flex; flex-direction: column; background: #f6f7f9; border-right: 1px solid #e7ebf1; }
+.brand { display: flex; align-items: center; gap: 12px; padding: 20px 18px 26px; font-size: 19px; font-weight: 650; letter-spacing: -.5px; }
+.brand-mark { display: grid; place-items: center; width: 36px; height: 36px; border-radius: 7px; background: #315efb; color: white; font-size: 13px; letter-spacing: -.3px; }
+.conversation-list { flex: 1; min-height: 0; overflow-y: auto; padding: 0 16px !important; }
+.conversation-list .ant-conversations-creation { margin: 0 0 22px; color: #315efb; border: 1px solid #315efb; background: transparent; font-weight: 600; min-height: 40px; }
+.conversation-list .ant-conversations-group-title { padding-inline: 2px; }
+.conversation-list .ant-conversations-item { margin-bottom: 4px; padding-block: 12px; }
+.workspace-status.ant-btn { display: flex; align-items: center; justify-content: start; flex: 0 0 auto; color: #69758a; margin: 14px 12px; height: 40px; font-size: 12px; }
+.chat-panel { display: flex; flex: 1; min-width: 0; flex-direction: column; background: #fff; }
+.chat-header { height: 64px; flex: 0 0 64px; border-bottom: 1px solid #e9edf3; display: flex; align-items: center; gap: 14px; padding: 0 26px; }
+.conversation-title { font-size: 16px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; min-width: 0; }
+.marketplace-select { width: 150px; flex: 0 0 150px; }
+.sidebar-toggle { display: none; }
+.welcome-region { flex: 1; min-height: 0; overflow-y: auto; display: flex; justify-content: center; align-items: center; padding: 32px 36px; }
+.welcome-inner { width: 100%; max-width: 760px; padding-bottom: 30px; }
+.workbench-welcome { display: flex; flex-direction: column; align-items: center; text-align: center; padding: 0 0 44px !important; gap: 22px !important; }
+.welcome-icon { display: grid; place-items: center; width: 96px; height: 96px; border-radius: 50%; background: #edf3ff; color: #315efb; font-size: 44px; }
+.workbench-welcome .ant-welcome-title { font-size: clamp(24px, 2.6vw, 34px); line-height: 1.4; font-weight: 650; letter-spacing: -.7px; }
+.workbench-welcome .ant-welcome-description { font-size: 17px; margin-top: 10px; color: #69758a; }
+.starter-prompts .ant-prompts-list { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+.starter-prompts .ant-prompts-item { width: 100%; min-width: 0; padding: 21px 18px; border: 1px solid #e0e5ed; border-radius: 9px; background: #fff; transition: border-color .15s, background-color .15s; }
+.starter-prompts .ant-prompts-item:hover { border-color: #9bafff; background: #f8faff; }
+.starter-prompts .ant-prompts-icon { display: grid; place-items: center; width: 46px; height: 46px; flex: 0 0 46px; border-radius: 50%; background: #f0f5ff; color: #315efb; font-size: 23px; margin-inline-end: 16px; }
+.starter-prompts .ant-prompts-label { font-weight: 600; font-size: 15px; }
+.starter-prompts .ant-prompts-desc { margin-top: 5px; color: #69758a; line-height: 1.65; font-size: 13px; }
+.prompt-label-button { appearance: none; padding: 0; border: 0; color: inherit; font: inherit; background: transparent; cursor: pointer; text-align: inherit; }
+.prompt-label-button:focus-visible { outline: 2px solid #315efb; outline-offset: 4px; border-radius: 2px; }
+.prompt-label-button:disabled { cursor: not-allowed; }
+.workbench .starter-prompts .ant-prompts-label { font-size: 15px; font-weight: 600; }
+.workbench .starter-prompts .ant-prompts-icon > .anticon { font-size: 23px; }
+.workbench .conversation-list .ant-conversations-item-active { color: #315efb; background: #e8efff; }
+.chat-history { flex: 1; min-height: 0; width: 100%; max-width: 1000px; align-self: center; padding: 22px 30px 0; display: flex; flex-direction: column; }
+.chat-bubbles { flex: 1; min-height: 0; }
+.chat-bubbles .ant-bubble-content { overflow-wrap: anywhere; }
+.chat-bubbles .ant-bubble-end .ant-bubble-content { background: #edf3ff; max-width: 700px; }
+.chat-bubbles .ant-bubble-start { max-width: 100%; }
+.chat-bubbles .ant-bubble-start .ant-bubble-body { min-width: 0; flex: 1; }
+.assistant-avatar { display: grid; place-items: center; width: 32px; height: 32px; border-radius: 8px; color: #315efb; background: #edf3ff; font-size: 20px; }
+.assistant-content { width: 100%; min-width: 0; }
+.assistant-content > .ant-alert { margin-bottom: 12px; }
+.example-note { display: flex; align-items: start; gap: 7px; margin-bottom: 14px; font-size: 12px; color: #69758a; line-height: 1.65; }
+.example-note > .anticon { margin-top: 4px; }
+.completion-label { display: flex; gap: 6px; align-items: center; font-size: 12px; color: #578568; margin-bottom: 14px; }
+.request-progress { padding: 12px 0 20px; }
+.followup-prompts { margin: 15px 0 24px; }
+.followup-prompts .ant-prompts-list { gap: 8px; }
+.followup-prompts .ant-prompts-item { padding: 6px 10px; border-radius: 6px; background: #fafbfe; color: #486388; font-size: 12px; flex: 0 1 auto; }
+.composer-region { flex: 0 0 auto; width: calc(100% - 76px); max-width: 960px; align-self: center; padding: 18px 0 16px; }
+.composer-region .ant-sender { border-radius: 12px; box-shadow: 0 2px 8px #17203305; }
+.composer-region .ant-sender-content { padding: 14px 16px 4px; }
+.sender-footer { display: flex; justify-content: space-between; align-items: center; padding: 0 14px 12px; }
+.sender-footer .ant-btn-sm { font-size: 12px; color: #536078; }
+.composer-hint { color: #929bad; font-size: 11px; text-align: center; margin-top: 12px; }
+.connection-alert { margin-bottom: 12px; }
+.json-editor { font-family: Consolas, "SFMono-Regular", monospace; font-size: 13px; }
+.result-card { min-width: 0; }
+.result-heading { font-size: 20px; font-weight: 600; line-height: 1.5; margin-bottom: 18px; }
+.result-section { margin-block: 22px; }
+.section-label { display: block; color: #69758a; font-size: 12px; margin-bottom: 8px; }
+.muted { color: #69758a; }
+.result-section-heading { display: flex; align-items: center; gap: 10px; justify-content: space-between; margin-bottom: 10px; }
+.research-summary, .audit-summary { display: flex; align-items: center; gap: 20px; padding: 18px; background: #f7f9fc; border-radius: 10px; margin-bottom: 18px; }
+.research-meta { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
+.score-value { font-size: 34px; font-weight: 650; white-space: nowrap; color: #315efb; }
+.score-value small { font-size: 14px; color: #69758a; font-weight: 400; }
+.dimension-label { display: flex; justify-content: space-between; gap: 14px; }
+.listing-bullets { padding-left: 22px; margin-bottom: 0; }
+.listing-bullets li { padding-left: 5px; margin-bottom: 12px; line-height: 1.8; }
+.listing-description { white-space: pre-wrap; line-height: 1.85; }
+.backend-terms { display: flex; flex-wrap: wrap; gap: 6px; }
+.result-actions { margin-top: 16px; }
+.result-actions .ant-actions-list { flex-wrap: wrap; gap: 3px; }
+.result-actions .ant-btn { font-size: 12px; color: #536078; }
+.coverage-note, .signal-note { color: #69758a; font-size: 12px; line-height: 1.8; margin-top: 8px; }
+.research-evidence { margin-top: 12px; }
+.result-card .ant-table { font-size: 13px; }
+.result-card .ant-collapse { background: #fff; }
+.result-card .ant-collapse-header { font-size: 13px; }
+@media (min-width: 1440px) { .welcome-inner { max-width: 800px; } }
+@media (max-width: 900px) {
+  .sidebar { width: 215px; flex-basis: 215px; }
+  .brand { font-size: 17px; }
+  .welcome-region { padding: 24px; }
+  .starter-prompts .ant-prompts-item { padding: 16px 12px; }
+  .starter-prompts .ant-prompts-icon { width: 32px; height: 32px; flex-basis: 32px; font-size: 18px; margin-inline-end: 8px; }
+  .workbench-welcome .ant-welcome-description { font-size: 14px; }
+  .chat-history { padding-inline: 20px; }
+  .composer-region { width: calc(100% - 40px); }
+}
+@media (max-width: 680px) {
+  .workbench { min-height: 420px; }
+  .sidebar { display: none; }
+  .sidebar-toggle { display: inline-flex; }
+  .chat-header { height: 56px; flex-basis: 56px; padding: 0 12px; gap: 8px; }
+  .conversation-title { font-size: 14px; }
+  .marketplace-select { width: 118px; flex-basis: 118px; }
+  .welcome-region { padding: 24px 18px; align-items: flex-start; }
+  .welcome-inner { padding-bottom: 4px; }
+  .workbench-welcome { gap: 12px !important; padding-bottom: 24px !important; }
+  .welcome-icon { width: 64px; height: 64px; font-size: 32px; }
+  .workbench-welcome .ant-welcome-title { font-size: 23px; }
+  .workbench-welcome .ant-welcome-description { font-size: 12px; line-height: 1.7; }
+  .starter-prompts .ant-prompts-list { gap: 10px; }
+  .starter-prompts .ant-prompts-item { padding: 12px; flex-direction: column; }
+  .starter-prompts .ant-prompts-label { font-size: 13px; }
+  .starter-prompts .ant-prompts-desc { font-size: 11px; }
+  .starter-prompts .ant-prompts-icon { margin: 0 0 8px; }
+  .composer-region { width: calc(100% - 28px); padding-bottom: 10px; padding-top: 10px; }
+  .composer-hint { font-size: 10px; margin-top: 8px; }
+  .chat-history { padding: 18px 12px 0; }
+  .assistant-avatar { width: 26px; height: 26px; font-size: 17px; }
+  .research-summary, .audit-summary { padding: 12px; gap: 12px; }
+  .result-heading { font-size: 17px; }
+  .listing-bullets { padding-left: 17px; }
+  .result-actions .ant-btn { padding-inline: 5px; font-size: 11px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; scroll-behavior: auto !important; }
+}

@@ -1,0 +1,22 @@
+{
+  "listing": {
+    "asin": "B0EXAMPLE01",
+    "title": "Portable Blender",
+    "bullets": ["Small blender for home use.", "USB charging."],
+    "description": "A small blender.",
+    "backendSearchTerms": [],
+    "imageCount": 3,
+    "hasAPlus": false,
+    "price": 29.99,
+    "rating": 4.1,
+    "reviewCount": 80
+  },
+  "keywords": [
+    "portable blender",
+    "personal blender",
+    "travel blender",
+    "USB rechargeable blender",
+    "smoothie maker"
+  ],
+  "marketplace": "us"
+}
