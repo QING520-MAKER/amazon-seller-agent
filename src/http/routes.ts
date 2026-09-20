@@ -3,6 +3,8 @@ import { z } from "zod";
 import { sellerGraph } from "../graph/index.js";
 import type { AgentUpdate } from "../graph/state.js";
 import { getMarketplace } from "../marketplace.js";
+import { createCatalogRoutes } from "./catalog-routes.js";
+import type { CatalogService } from "../catalog/service.js";
 import {
   ListingCreateRequestSchema,
   ListingOptimizeRequestSchema,
@@ -26,7 +28,7 @@ function validationIssues(error: z.ZodError) {
   return error.issues.map(({ path, message }) => ({ path: path.join("."), message }));
 }
 
-export function createApp(options: { invoke?: InvokeGraph } = {}) {
+export function createApp(options: { invoke?: InvokeGraph; catalog?: CatalogService } = {}) {
   const app = new Hono();
   const invoke = options.invoke ?? ((input: AgentUpdate) => sellerGraph.invoke(input));
 
@@ -96,6 +98,7 @@ export function createApp(options: { invoke?: InvokeGraph } = {}) {
   }
 
   app.get("/api/health", (c) => c.json({ status: "ok" }));
+  app.route("/api/products", createCatalogRoutes(options.catalog));
   app.post("/api/research", (c) => run(c, ResearchRequestSchema, (request) => ({
     ...request,
     intent: "research",

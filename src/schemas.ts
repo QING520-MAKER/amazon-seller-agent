@@ -154,3 +154,107 @@ export type ListingCreateRequest = z.infer<typeof ListingCreateRequestSchema>;
 export type ListingOptimizeRequest = z.infer<typeof ListingOptimizeRequestSchema>;
 export type ListingResult = z.infer<typeof ListingResultSchema>;
 export type Intent = "research" | "listing_create" | "listing_audit" | "pipeline";
+
+// Local catalog contracts. Deliberately separate from the original CLI/graph schemas.
+const factLines = z.array(z.string().trim().max(2000)).max(100)
+  .transform((lines) => lines.filter(Boolean));
+const catalogBriefShape = {
+  name: z.string().trim().min(1).max(300),
+  brand: z.string().trim().max(500),
+  attributes: factLines,
+  features: factLines,
+  audience: z.string().trim().max(500),
+  useCases: factLines,
+  included: factLines,
+  tone: ToneSchema,
+};
+// No defaults here: a missing key in a full snapshot must never silently clear a fact.
+export const CatalogBriefSchema = z.object(catalogBriefShape).strict();
+export const CreateCatalogBriefSchema = z.object({
+  ...catalogBriefShape,
+  brand: catalogBriefShape.brand.default(""),
+  attributes: factLines.default([]),
+  features: factLines.default([]),
+  audience: catalogBriefShape.audience.default(""),
+  useCases: factLines.default([]),
+  included: factLines.default([]),
+  tone: ToneSchema.default("professional"),
+}).strict();
+export const CatalogIdSchema = z.string().uuid();
+const catalogTime = z.string().datetime();
+const sourceNote = z.string().trim().max(10000);
+export const CreateProductSchema = z.object({
+  sku: z.string().trim().min(1).max(128).regex(/^[^\u0000-\u001f\u007f-\u009f]+$/, "SKU 不能包含控制字符"),
+  brief: CreateCatalogBriefSchema,
+  sourceNote: sourceNote.default(""),
+}).strict();
+export const SaveProductBriefSchema = z.object({
+  baseRevisionId: CatalogIdSchema,
+  brief: CatalogBriefSchema,
+  sourceNote,
+}).strict();
+export const SetAssetStateSchema = z.object({
+  expectedVersion: z.number().int().positive().safe(),
+  archived: z.boolean(),
+}).strict();
+export const ProductRecordSchema = z.object({
+  id: CatalogIdSchema, workspaceId: z.literal("local"), sku: z.string(),
+  currentRevisionId: CatalogIdSchema, createdAt: catalogTime, updatedAt: catalogTime,
+}).strict();
+export const ProductRevisionSchema = z.object({
+  id: CatalogIdSchema, productId: CatalogIdSchema, revisionNumber: z.number().int().positive(),
+  brief: ProductBriefSchema, sourceNote: z.string(), createdAt: catalogTime,
+}).strict();
+export const OriginalAssetSchema = z.object({
+  id: CatalogIdSchema, productId: CatalogIdSchema, kind: z.literal("original"),
+  originalName: z.string(), mimeType: z.enum(["image/jpeg", "image/png"]),
+  sizeBytes: z.number().int().positive(), width: z.number().int().positive(), height: z.number().int().positive(),
+  orientation: z.number().int().min(1).max(8).nullable(), sha256: z.string().regex(/^[a-f0-9]{64}$/),
+  createdAt: catalogTime, archivedAt: catalogTime.nullable(), version: z.number().int().positive(),
+}).strict();
+export const MissingFieldSchema = z.enum(["attributes", "features", "included", "sourceNote", "originalAssets"]);
+export const ProductSummarySchema = z.object({
+  product: ProductRecordSchema, name: z.string(), revisionNumber: z.number().int().positive(),
+  originalAssetCount: z.number().int().nonnegative(), missingFields: z.array(MissingFieldSchema),
+}).strict();
+export const ProductDetailSchema = z.object({
+  product: ProductRecordSchema, currentRevision: ProductRevisionSchema, missingFields: z.array(MissingFieldSchema),
+}).strict();
+export function PageSchema<T extends z.ZodTypeAny>(item: T) {
+  return z.object({ items: z.array(item), total: z.number().int().nonnegative(),
+    limit: z.number().int().min(1).max(100), offset: z.number().int().nonnegative() }).strict();
+}
+export const RevisionSummarySchema = ProductRevisionSchema.pick({ id: true, revisionNumber: true, createdAt: true });
+export const ProductPageSchema = PageSchema(ProductSummarySchema);
+export const RevisionPageSchema = PageSchema(RevisionSummarySchema);
+export const AssetPageSchema = PageSchema(OriginalAssetSchema);
+export const SaveProductResultSchema = z.object({
+  product: ProductRecordSchema, revision: ProductRevisionSchema, changed: z.boolean(),
+}).strict();
+export const UploadAssetResultSchema = z.object({ asset: OriginalAssetSchema, reused: z.boolean() }).strict();
+export const AssetStateResultSchema = z.object({ asset: OriginalAssetSchema, changed: z.boolean() }).strict();
+export const ApiFailureSchema = z.object({ error: z.object({
+  code: z.string(), message: z.string(),
+  issues: z.array(z.object({ path: z.string(), message: z.string() })).optional(),
+  details: z.object({ currentRevisionId: CatalogIdSchema.optional(), currentAssetVersion: z.number().int().positive().optional(),
+    existingProductId: CatalogIdSchema.optional() }).optional(),
+}) });
+const queryInteger = z.string().regex(/^\d+$/).transform(Number).pipe(z.number().int().safe());
+export const CatalogPaginationSchema = z.object({
+  limit: queryInteger.pipe(z.number().min(1).max(100)).default("20"),
+  offset: queryInteger.pipe(z.number().min(0)).default("0"),
+}).strict();
+export const ProductQuerySchema = CatalogPaginationSchema.extend({ q: z.string().trim().max(200).default("") });
+export const AssetQuerySchema = CatalogPaginationSchema.extend({ state: z.enum(["active", "archived"]).default("active") });
+export type CreateProductInput = z.input<typeof CreateProductSchema>;
+export type CreateProduct = z.infer<typeof CreateProductSchema>;
+export type SaveProductBrief = z.infer<typeof SaveProductBriefSchema>;
+export type ProductRecord = z.infer<typeof ProductRecordSchema>;
+export type ProductRevision = z.infer<typeof ProductRevisionSchema>;
+export type OriginalAsset = z.infer<typeof OriginalAssetSchema>;
+export type MissingField = z.infer<typeof MissingFieldSchema>;
+export type ProductSummary = z.infer<typeof ProductSummarySchema>;
+export type ProductDetail = z.infer<typeof ProductDetailSchema>;
+export type ApiFailure = z.infer<typeof ApiFailureSchema>;
+export type CatalogPagination = z.infer<typeof CatalogPaginationSchema>;
+export type Page<T> = { items: T[]; total: number; limit: number; offset: number };

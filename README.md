@@ -3,12 +3,14 @@
 TypeScript + **LangGraph.js** CLI for Amazon seller **keyword research** and **listing create/audit**.  
 Phase 1 implements public autocomplete research and local template-based listing creation/auditing, with frozen Zod contracts.
 
+项目业务介绍、图文运营方向与切片 3—9 路线见 [PROJECT_BRIEF.md](PROJECT_BRIEF.md)；网页端 Astra 与本地 Codex 的协作启动文字和交接格式见 [ASTRA_COLLABORATION.md](ASTRA_COLLABORATION.md)。后续路线为规划，以下仍描述已实现能力。
+
 ## First-step summary
 
 | Item | Decision |
 |---|---|
 | Path | `E:\Develop\amazon-seller-agent` |
-| Stack | Node 20+, TypeScript, Zod, `@langchain/langgraph` |
+| Stack | Node `^20.19.0 \|\| >=22.12.0`（实测 22.23.2）, TypeScript, Zod, `@langchain/langgraph` |
 | Phase 1 | Research + Listing only (no PPC, no FBA ops) |
 | Data | Public Amazon autocomplete + user-supplied listing JSON |
 | Not in phase 1 | Seller Central login, product-page scrape, SP-API writes |
@@ -51,7 +53,7 @@ npm install
 npm run dev:ui
 ```
 
-打开 **http://127.0.0.1:5173/**。Vite 将 `/api` 代理到本地 Hono 服务 `127.0.0.1:8787`。两个端口必须空闲；`Ctrl+C` 同时停止前后端。也可分别运行 `npm run dev:api`、`npm run dev:web`。`npm run typecheck` 同时检查服务端与前端；`npm run build:web` 构建 UI，原有 `npm run build` 继续构建 CLI/API。
+打开 **http://127.0.0.1:5173/**，在顶部选择“对话工作台”（默认进入商品库）。Vite 将 `/api` 代理到本地 Hono 服务 `127.0.0.1:8787`。两个端口必须空闲；`Ctrl+C` 同时停止开发前后端。也可分别运行 `npm run dev:api`、`npm run dev:web`。Windows 的 watch 重启可能强制结束子进程，备份应使用下面的正常停服流程。`npm run typecheck` 同时检查服务端与前端；`npm run build:web` 构建 UI，原有 `npm run build` 继续构建 CLI/API。
 
 工作台使用 [Ant Design X](https://x.ant.design/components/introduce/) 的 XProvider、Conversations、Welcome、Prompts、Bubble.List、Sender、ThoughtChain 和 Actions。会话保存在当前页面内存中，刷新会清空；可以新建、切换和删除多个会话，各会话请求互不覆盖。
 
@@ -70,6 +72,69 @@ npm run dev:ui
 | `POST /api/pipeline` | `{ keyword, marketplace, product }`，组合现有 schema | `ListingResult` |
 
 POST 需 `Content-Type: application/json`。错误统一返回 `{ error: { code, message, issues? } }`；请求 JSON/字段/站点错误不会调用 graph。前端只访问 `/api`，补全请求由既有 graph 完成。图、CLI、评分公式和契约保持切片 1 实现。切片 2 文件清单见 [HANDOFF_SLICE2.md](HANDOFF_SLICE2.md)。
+
+## 切片 3：商品资料与原图
+
+商品库支持搜索、新建、完整资料编辑、不可变历史版本，以及 JPEG/PNG 原图上传、预览、下载、移除与恢复。仅 SKU 和名称必填；空事实保持为空。SKU 去除首尾空白、区分大小写，新建后只读。资料保存不代表事实已经核实；历史资料版本展示的是当时快照，原图库始终展示当前素材状态。
+
+两个窗口修改同一版本时，后保存者收到冲突；页面保留草稿，可查看服务器最新资料、复制本地草稿或明确放弃后重新载入。相同正文保存不追加版本。上传按商品与原始 SHA-256 去重，移除后的相同文件重传仍保持移除状态，需要显式恢复。网络中断时显示“保存结果待确认”，重试前核对服务器记录。
+
+### 安装与运行
+
+本机验收：Windows 11 x64（10.0.26200）、Node 22.23.2、npm 11.17.0；没有验证 Windows 10 或 Node 20。根 engines 从宽泛的 `>=20` 改为与已有 Vite 工具链一致的 `^20.19.0 || >=22.12.0`，不代表这些版本均已实测。推荐采用本次实测的 Node 22 环境。
+
+```powershell
+Set-Location E:\Develop\amazon-seller-agent
+npm ci
+npm run build
+$env:ASA_DATA_DIR = 'E:\AmazonSellerAgentData'
+npm run start:api
+```
+
+另一个 PowerShell 窗口执行 `npm run dev:web`，打开 **http://127.0.0.1:5173/**。`start:api` 使用编译产物，不自动监视源码；修改 API 后需要重新构建并重启。需要同时监视源码时使用 `npm run dev:ui`。
+
+依赖固定为 `better-sqlite3@12.11.1`、`sharp@0.35.4`；实测 SQLite 3.53.2。干净目录 `npm ci` 和原生模块加载均已通过。npm 11.17 可能提示安装脚本尚未登记 allowScripts；本机实际仍成功安装。若所在环境禁用了依赖安装脚本，应按日志处理原生预编译安装，再验证模块能加载；不要回退到内存数据或另加 Python 编译链。镜像下载失败时可命令级使用 `npm ci --registry=https://registry.npmjs.org --cache=E:\CodexTemp\npm-cache`，无需改全局设置。
+
+### 数据目录与停服备份
+
+`ASA_DATA_DIR` 可放在 `.env` 或进程环境变量，推荐本机 E 盘普通目录。未配置时使用应用根目录的 `data`，与启动 cwd 无关。启动日志显示实际路径。目录包含 `catalog.sqlite`、`originals/<productId>/<assetId>.jpg|png`、`tmp`、`recovery`，不能作为静态网站暴露，也不要放到网络共享或同步目录。
+
+正常停服：在 `npm run start:api` 的窗口输入 **`stop` 后回车**。等待 `Storage closed; safe to back up the complete data directory.` 和进程退出。应用会拒绝新业务请求、等待在途操作、checkpoint/关闭数据库，最后释放端口。
+
+确认服务已退出后，在 PowerShell 复制整个目录：
+
+```powershell
+$backupPath = 'E:\AmazonSellerAgentBackups\backup-' + (Get-Date -Format 'yyyyMMdd-HHmmss')
+New-Item -ItemType Directory -Path 'E:\AmazonSellerAgentBackups' -Force | Out-Null
+Copy-Item -LiteralPath 'E:\AmazonSellerAgentData' -Destination $backupPath -Recurse
+# 用另一个目录恢复验证；一次只运行一个 API。
+$env:ASA_DATA_DIR = $backupPath
+npm run start:api
+```
+
+恢复后核对商品、版本和原图下载 SHA-256，再决定使用哪个目录。不要只复制正在运行的 SQLite 主文件，不要手工删除 WAL。若此前强制关闭开发 watch，先以 `start:api` 打开同一目录完成恢复检查，再输入 `stop` 正常关闭后备份。
+
+应用启动先绑定固定 `127.0.0.1:8787`，绑定失败的第二实例不会打开存储。初始化期间统一返回 503；未知迁移版本会启动失败并保留原库。SQLite 使用外键、WAL、FULL 和 3000ms busy timeout。恢复扫描保留孤立/中断文件并记录到 `recovery`；已登记原图丢失或损坏会明确报错，不自动删记录或补图。
+
+### 新增 API 与容量
+
+全部接口位于 `/api/products`，完整契约见 `src/schemas.ts`。列表默认 20 条，支持 `limit=1..100`、非负 `offset`；商品搜索用 `q`，素材用 `state=active|archived`。
+
+| 方法/路径（相对 `/api/products`） | 用途 |
+|---|---|
+| `GET /`、`POST /` | 商品分页、新建 `{sku, brief, sourceNote?}` |
+| `GET /:productId` | 当前资料与固定缺项 |
+| `PUT /:productId/brief` | `{baseRevisionId, brief, sourceNote}` 完整快照；缺键拒绝 |
+| `GET /:productId/revisions`、`GET /:productId/revisions/:revisionId` | 历史列表与只读快照 |
+| `GET /:productId/assets`、`POST /:productId/assets` | 原图列表；上传每请求一个 multipart `file` |
+| `PATCH /:productId/assets/:assetId` | `{expectedVersion, archived}` 移除/恢复 |
+| `GET /:productId/assets/:assetId/content` | 受控原文件；`?download=1` 下载 |
+
+图片按实际内容识别，严格完整解码，拒绝 APNG、损坏及截断文件；保存上传的原始字节（包括 EXIF），不重编码。单文件 20 MiB、multipart 21 MiB、4000 万像素、单边 12000 像素；服务同时处理最多 2 个上传，超额返回忙状态。新增 JSON 写请求最多 8 MiB。这些是本应用容量限制。
+
+错误包含 `error.code/message/issues?/details?`。常见结果：422 字段或图片无效、409 SKU/资料版本/素材版本冲突、413 超容量、415 类型不支持、503 未就绪或存储忙、507 空间不足。新写接口只接受本机 UI/API 的确切 Origin；无 Origin 的本地脚本可用。服务仅用于本机单工作空间，没有远程多用户认证。
+
+本片未接通商品到生成工作流、LLM、生图、批量导入或平台发布。旧工作台会话仍保存在页面内存中；导航保留状态，整页刷新会清空。实现范围、A1–A20 证据及截图见 [HANDOFF_SLICE3.md](HANDOFF_SLICE3.md)。
 
 ## Output and scoring
 

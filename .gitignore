@@ -7,6 +7,12 @@ dist/
 reports/
 .DS_Store
 coverage/
+data/
+backups/
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
+*.part
 .venv/
 __pycache__/
 *.pyc

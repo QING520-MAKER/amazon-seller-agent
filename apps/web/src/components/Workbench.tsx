@@ -10,7 +10,7 @@ import { ProductBriefSchema } from "../../../../src/schemas.js";
 import productExample from "../../../../examples/product_brief.json";
 import { checkHealth } from "../api.js";
 import { createExampleRequest, parseIntent, REQUEST_LABELS, type RequestKind, type WorkbenchRequest } from "../intent.js";
-import { useWorkbench, type ChatMessage } from "../useWorkbench.js";
+import type { useWorkbench, ChatMessage } from "../useWorkbench.js";
 import { StarterPrompts } from "./StarterPrompts.js";
 import { ResearchCard } from "./ResearchCard.js";
 import { ListingCard } from "./ListingCard.js";
@@ -24,11 +24,11 @@ const roles = {
 
 interface EditorState { kind: RequestKind; text: string; initial: string; examples: string[] }
 
-export function Workbench() {
-  const chat = useWorkbench();
+export function Workbench({ chat, active = true }: { chat: ReturnType<typeof useWorkbench>; active?: boolean }) {
   const [health, setHealth] = useState<"checking" | "online" | "offline">("checking");
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [editor, setEditor] = useState<EditorState>();
+  const [editorOpen, setEditorOpen] = useState(false);
   const [editorError, setEditorError] = useState("");
 
   useEffect(() => {
@@ -44,7 +44,10 @@ export function Workbench() {
       .catch(() => setHealth("offline"));
   }
 
-  function openEditor(request = chat.active.lastRequest ?? createExampleRequest("listing-create", chat.active.marketplace)) {
+  function openEditor(request?: WorkbenchRequest) {
+    setEditorOpen(true);
+    if (!request && editor) return;
+    request ??= chat.active.lastRequest ?? createExampleRequest("listing-create", chat.active.marketplace);
     const text = JSON.stringify(request.payload, null, 2);
     setEditor({ kind: request.kind, text, initial: text, examples: request.exampleData });
     setEditorError("");
@@ -58,6 +61,7 @@ export function Workbench() {
       request.exampleData = [...new Set([...request.exampleData, ...editor.examples.map((source) =>
         editor.text === editor.initial ? source : `${source}（基于示例编辑）`)])];
       setEditor(undefined);
+      setEditorOpen(false);
       void chat.submitRequest(request, `${REQUEST_LABELS[request.kind]} · 已提交结构化请求`);
     } catch (error) {
       setEditorError(error instanceof Error ? error.message : "请检查 JSON 内容。");
@@ -135,7 +139,7 @@ export function Workbench() {
 
   return <div className="workbench">
     <aside className="sidebar" aria-label="会话列表">{sidebar}</aside>
-    <Drawer open={sidebarOpen} onClose={() => setSidebarOpen(false)} placement="left" size={280}
+    <Drawer open={active && sidebarOpen} onClose={() => setSidebarOpen(false)} placement="left" size={280}
       title="会话" className="mobile-sidebar" styles={{ body: { padding: 0, display: "flex", flexDirection: "column" } }}>{sidebar}</Drawer>
     <main className="chat-panel">
       <header className="chat-header">
@@ -172,8 +176,8 @@ export function Workbench() {
         <div className="composer-hint">提示：支持研究、生成、审计和一键流水线</div>
       </div>
     </main>
-    <Modal open={Boolean(editor)} title="编辑结构化请求" onCancel={() => setEditor(undefined)} onOk={submitEditor}
-      okText="发送请求" cancelText="取消" width={720} destroyOnHidden>
+    <Modal open={active && editorOpen} title="编辑结构化请求" onCancel={() => setEditorOpen(false)} onOk={submitEditor}
+      okText="发送请求" cancelText="暂存并关闭" width={720} destroyOnHidden>
       <Space orientation="vertical" style={{ width: "100%" }} size={14}>
         <Typography.Paragraph type="secondary" style={{ margin: 0 }}>可替换示例中的产品、关键词或 Listing。字段与 CLI 输入相同。</Typography.Paragraph>
         <Select aria-label="任务类型" style={{ width: "100%" }} value={editor?.kind}
