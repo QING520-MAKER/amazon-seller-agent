@@ -68,6 +68,27 @@ describe("image storage and service", () => {
     await expect(images.generate(a.id, { ...input, plan: { ...input.plan, headline: "Changed" } })).rejects.toMatchObject({ code: "IMAGE_REQUEST_CONFLICT" });
   }, 30000);
 
+  it("keeps legacy requests replayable and binds new layout revisions to new unreviewed candidates", async () => {
+    const p = product(), asset = await original(p.id);
+    const oldRequest = request(p.id, asset.asset);
+    const old = await images.generate(p.id, oldRequest);
+    images.review(p.id, old.image!.id, "approved", "Reviewed legacy layout");
+    const v2Plan = { ...oldRequest.plan, template: { layout: "split" as const, version: 2 as const } };
+    await expect(images.generate(p.id, { ...oldRequest, plan: v2Plan })).rejects.toMatchObject({ code: "IMAGE_REQUEST_CONFLICT" });
+    const next = await images.generate(p.id, { ...oldRequest, requestId: randomUUID(), plan: v2Plan });
+    expect(next.image!.plan.template).toEqual({ layout: "split", version: 2 });
+    expect(next.image!.id).not.toBe(old.image!.id);
+    expect(images.detail(p.id, next.image!.id).review).toBeNull();
+    const dataDir = catalog!.files.root;
+    catalog!.close();
+    catalog = (await openCatalog({ dataDir })).catalog;
+    images = catalog.imageService!;
+    expect(await images.generate(p.id, oldRequest)).toMatchObject({ reused: true, image: { id: old.image!.id } });
+    expect(images.detail(p.id, old.image!.id).image.plan.template).toBeUndefined();
+    expect(images.detail(p.id, old.image!.id).review?.decision).toBe("approved");
+    expect(images.detail(p.id, next.image!.id).image.plan.template).toEqual({ layout: "split", version: 2 });
+  }, 30000);
+
   it("records provider failures without leaking provider details", async () => {
     const provider: ImageProvider = {
       id: "test-provider", model: "test-model", capabilities: { cancellation: false, idempotency: false, statusLookup: false },

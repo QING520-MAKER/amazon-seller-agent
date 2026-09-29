@@ -11,11 +11,13 @@ Phase 1 implements public autocomplete research and local template-based listing
 
 1. 录入商品事实、原图与知识。知识支持手动输入、UTF-8 `.txt` / `.md` 导入、搜索、版本历史和人工确认；每条知识限定当前商品，最多选择 20 条已确认版本作为依据。
 2. 输入或从关键词研究选择真实关键词，生成 US 英文模板文案；编辑保存新版本，再人工批准或退回。标题、Item Highlights、五点、描述、后台词分别校验。AI 模式仅在服务端明确配置后调用。
-3. 选择原图、标题和最多三条文字，生成真实 1600×1600 PNG 卖点图；并排核对原图与候选，批准具体版本。本地排版保留产品原图，不生成新场景。场景模式提供适配接口，未配置时会记录失败原因。
+3. 选择原图、标题和最多三条文字，使用左右分栏或上下堆叠 v2 模板生成真实 1600×1600 PNG 卖点图；查看 96px 安全区示意和溢出提示，再并排核对原图与候选、批准具体版本。本地排版等比保留原图，不生成新场景。场景模式提供适配接口，未配置时会记录失败原因。
 4. 选择具体文案、图片版本和图片顺序，制作草稿或正式包。ZIP 含文案、PNG/JPEG、固定依据清单与审核快照。正式创建及下载都会重查审核和依据是否有效，旧包不会跟随最新文案变化。
 5. “批量任务”支持最多 20 个商品的逐项模板/模型任务，以及 JSON 商品导入。创建和执行分开；失败项通过明确新建批次重试。重启不自动重放可能收费的请求。导入结构见 [examples/product_import.json](examples/product_import.json)，请替换占位资料。
 
 本地模板和排版不需要生成服务 API。文字/图片适配说明见 [PROVIDER_ADAPTERS.md](docs/architecture/PROVIDER_ADAPTERS.md)。开发用 Astra/Luna 配置与产品运行时 API 相互独立；不可把 Codex 登录权限当作产品生成额度。
+
+文案、图片、运行记录、批次及内容包均支持分页；翻页保留正在编辑的内容、审核备注和已选版本，内容包的文案/图片选择也支持跨页。JSON、PNG/JPEG 和 ZIP 使用浏览器原生附件下载，服务器在每次正式导出时仍核对具体版本。图片方案记录模板版本；历史方案不会自动改成 v2，修改文字或布局需生成新的待审候选。
 
 工程设计见 [CONTENT_STUDIO.md](docs/architecture/CONTENT_STUDIO.md)，[协作规范](docs/agents/collaboration.md)和[项目 skills](docs/agents/skills.md)，[GitHub 固定提交与许可证核查](docs/research/OPEN_SOURCE_REFERENCES.md)。本轮借鉴结构和设计，没有复制上游源码或引入额外运行时。
 
@@ -115,18 +117,24 @@ npm run start:api
 
 正常停服：在 `npm run start:api` 的窗口输入 **`stop` 后回车**。等待 `Storage closed; safe to back up the complete data directory.` 和进程退出。应用会拒绝新业务请求、等待在途操作、checkpoint/关闭数据库，最后释放端口。
 
-确认服务已退出后，在 PowerShell 复制整个目录：
+确认服务已退出后，使用下面的数据工具备份整个目录。恢复后核对商品、版本和原图下载 SHA-256，再决定使用哪个目录。不要只复制正在运行的 SQLite 主文件，不要手工删除 WAL。若此前强制关闭开发 watch，先以 `start:api` 打开同一目录完成恢复检查，再输入 `stop` 正常关闭后备份。
+
+### 带清单校验的备份与恢复
+
+使用随 API 构建的 TypeScript 数据工具。先执行 `npm run build`，按上文输入 `stop` 正常停服；目标父目录要已存在，目标目录本身必须不存在。以下命令支持路径含空格：
 
 ```powershell
-$backupPath = 'E:\AmazonSellerAgentBackups\backup-' + (Get-Date -Format 'yyyyMMdd-HHmmss')
 New-Item -ItemType Directory -Path 'E:\AmazonSellerAgentBackups' -Force | Out-Null
-Copy-Item -LiteralPath 'E:\AmazonSellerAgentData' -Destination $backupPath -Recurse
-# 用另一个目录恢复验证；一次只运行一个 API。
-$env:ASA_DATA_DIR = $backupPath
+node dist/data-cli.js backup --source 'E:\AmazonSellerAgentData' --destination 'E:\AmazonSellerAgentBackups\backup-20260929'
+node dist/data-cli.js verify --source 'E:\AmazonSellerAgentBackups\backup-20260929'
+node dist/data-cli.js restore --source 'E:\AmazonSellerAgentBackups\backup-20260929' --destination 'E:\AmazonSellerAgentRestored'
+$env:ASA_DATA_DIR = 'E:\AmazonSellerAgentRestored'
 npm run start:api
 ```
 
-恢复后核对商品、版本和原图下载 SHA-256，再决定使用哪个目录。不要只复制正在运行的 SQLite 主文件，不要手工删除 WAL。若此前强制关闭开发 watch，先以 `start:api` 打开同一目录完成恢复检查，再输入 `stop` 正常关闭后备份。
+备份目录包含 `manifest.json` 与完整 `data` 子目录。工具检查 SQLite 完整性和已知迁移版本，为每个文件保存大小及 SHA-256，恢复到新目录后再次校验。操作期间占用本地 API 的 8787 端口：运行中的 API 会使操作拒绝，操作期间也不能启动新 API。目录联接/符号链接、相互嵌套的源目标、已有目标和未清空 WAL 均拒绝。数据库检查使用临时副本，避免只读连接也生成 WAL/SHM 而改变源目录；本机临时目录应保持为 `E:\CodexTemp`。
+
+工具不删除或覆盖原库。失败时可能留下未完成的新目录；保留它用于排查并换一个新目标重试，未完成备份不能恢复。备份清单用于发现损坏，不提供签名、防篡改认证或加密。请让其他数据库编辑工具也保持关闭，确保目标磁盘能容纳整库和验证临时副本。
 
 应用启动先绑定固定 `127.0.0.1:8787`，绑定失败的第二实例不会打开存储。初始化期间统一返回 503；未知迁移版本会启动失败并保留原库。SQLite 使用外键、WAL、FULL 和 3000ms busy timeout。恢复扫描保留孤立/中断文件并记录到 `recovery`；已登记原图丢失或损坏会明确报错，不自动删记录或补图。
 
@@ -148,7 +156,7 @@ npm run start:api
 
 错误包含 `error.code/message/issues?/details?`。常见结果：422 字段或图片无效、409 SKU/资料版本/素材版本冲突、413 超容量、415 类型不支持、503 未就绪或存储忙、507 空间不足。新写接口只接受本机 UI/API 的确切 Origin；无 Origin 的本地脚本可用。服务仅用于本机单工作空间，没有远程多用户认证。
 
-本片未接通商品到生成工作流、LLM、生图、批量导入或平台发布。旧工作台会话仍保存在页面内存中；导航保留状态，整页刷新会清空。实现范围、A1–A20 证据及截图见 [HANDOFF_SLICE3.md](HANDOFF_SLICE3.md)。
+历史切片 3 当时尚未接通商品到生成工作流；后续 S4—S7 能力见本页顶部。旧对话工作台会话仍保存在页面内存中；导航保留状态，整页刷新会清空。切片 3 的实现范围、A1–A20 证据及截图见 [HANDOFF_SLICE3.md](HANDOFF_SLICE3.md)。
 
 ## Output and scoring
 

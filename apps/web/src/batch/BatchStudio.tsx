@@ -6,6 +6,7 @@ import { listContent } from "../content/api.js";
 import { createBatch, executeBatch, getBatch, importProducts, listBatches, randomRequestId } from "./api.js";
 
 type DraftItem = { productId: string; input?: GenerateContent; detail?: ProductDetail; loading?: boolean };
+type BatchPage = ReturnType<typeof listBatches> extends Promise<infer T> ? T : never;
 
 function lines(value: string) { return [...new Set(value.split(/\r?\n/).map(item => item.trim()).filter(Boolean))].slice(0, 50); }
 function wait(ms: number) { return new Promise<void>(resolve => window.setTimeout(resolve, ms)); }
@@ -33,6 +34,8 @@ export function BatchStudio({ onDirty }: { onDirty?: (dirty: boolean) => void })
   const [products, setProducts] = useState<ProductSummary[]>([]);
   const [drafts, setDrafts] = useState<DraftItem[]>([]);
   const [batches, setBatches] = useState<ContentBatch[]>([]);
+  const [batchPage, setBatchPage] = useState<BatchPage>();
+  const [batchOffset, setBatchOffset] = useState(0);
   const [current, setCurrent] = useState<ContentBatch>();
   const [commonKeywords, setCommonKeywords] = useState("");
   const [advancedJson, setAdvancedJson] = useState("");
@@ -43,43 +46,78 @@ export function BatchStudio({ onDirty }: { onDirty?: (dirty: boolean) => void })
   const [importBusy, setImportBusy] = useState(false);
   const [importResult, setImportResult] = useState<{ index: number; sku: string; productId: string | null; status: "created" | "failed"; errorMessage: string | null }[]>();
   const request = useRef<AbortController | undefined>(undefined);
+  const detailRequest = useRef<AbortController | undefined>(undefined);
+  const detailSequence = useRef(0);
+  const historyRequest = useRef<AbortController | undefined>(undefined);
+  const historySequence = useRef(0);
+  const requestedHistoryOffset = useRef(0);
+  const loadSequence = useRef(0);
   const alive = useRef(true);
   const savedSnapshot = useRef("");
   const userEdited = useRef(false);
   const pendingBatch = useRef<PendingBatch | undefined>(undefined);
+  const prepareSequence = useRef(new Map<string, number>());
   const draftKey = useMemo(() => JSON.stringify({ drafts: drafts.map(item => ({ productId: item.productId, input: item.input ? { ...item.input, requestId: "" } : null })), advancedJson, commonKeywords }), [advancedJson, commonKeywords, drafts]);
   const dirty = userEdited.current && draftKey !== savedSnapshot.current && Boolean(drafts.length || advancedJson || commonKeywords);
 
-  useEffect(() => { alive.current = true; return () => { alive.current = false; request.current?.abort(); onDirty?.(false); }; }, [onDirty]);
+  useEffect(() => { alive.current = true; return () => { alive.current = false; request.current?.abort(); historyRequest.current?.abort(); detailRequest.current?.abort(); onDirty?.(false); }; }, [onDirty]);
   useEffect(() => { onDirty?.(dirty); }, [dirty, onDirty]);
 
   const load = useCallback(async () => {
     request.current?.abort(); const controller = new AbortController(); request.current = controller;
+    const token = ++loadSequence.current;
     setLoading(true); setError("");
     const result = await Promise.allSettled([listProducts("", 0, controller.signal), listBatches(0, 30, controller.signal)]);
-    if (!alive.current || controller.signal.aborted) return;
+    if (!alive.current || controller.signal.aborted || token !== loadSequence.current) return;
     const [productResult, batchResult] = result;
     const rejected = result.find(item => item.status === "rejected") as PromiseRejectedResult | undefined;
     if (rejected && !(rejected.reason instanceof DOMException && rejected.reason.name === "AbortError")) setError(errorMessage(rejected.reason));
     if (productResult?.status === "fulfilled") setProducts(productResult.value.items);
-    if (batchResult?.status === "fulfilled") setBatches(batchResult.value.items);
+    if (batchResult?.status === "fulfilled") { setBatchPage(batchResult.value); setBatchOffset(batchResult.value.offset); setBatches(batchResult.value.items); }
     setLoading(false);
   }, []);
   useEffect(() => { void load().catch(cause => { if (alive.current) setError(errorMessage(cause)); }); return () => request.current?.abort(); }, [load]);
 
+  const loadHistory = useCallback(async (offset: number) => {
+    historyRequest.current?.abort();
+    const controller = new AbortController(); historyRequest.current = controller;
+    const token = ++historySequence.current;
+    requestedHistoryOffset.current = offset;
+    setLoading(true); setError("");
+    try {
+      const page = await listBatches(offset, 30, controller.signal);
+      if (!alive.current || controller.signal.aborted || token !== historySequence.current) return page;
+      setBatchPage(page); setBatchOffset(page.offset); setBatches(page.items);
+      return page;
+    } finally {
+      if (alive.current && token === historySequence.current) setLoading(false);
+    }
+  }, []);
+
   const selectedIds = useMemo(() => new Set(drafts.map(item => item.productId)), [drafts]);
   async function prepareItem(productId: string) {
+    const token = (prepareSequence.current.get(productId) ?? 0) + 1;
+    prepareSequence.current.set(productId, token);
     try {
       const [detail, content] = await Promise.all([getProduct(productId), listContent(productId, 0, 30)]);
-      if (!alive.current) return;
+      if (!alive.current || prepareSequence.current.get(productId) !== token) return;
       const input = GenerateContentSchema.parse({ requestId: randomRequestId(), sourceRevisionId: detail.currentRevision.id, baseContentVersionId: content.headVersionId, marketplace: "us", keywords: [], mode: "template", knowledgeRevisionIds: [] });
       setDrafts(old => old.map(item => item.productId === productId ? { ...item, detail, input, loading: false } : item));
-    } catch (cause) { if (alive.current) { setError(errorMessage(cause)); setDrafts(old => old.map(item => item.productId === productId ? { ...item, loading: false } : item)); } }
+    } catch (cause) {
+      if (alive.current && prepareSequence.current.get(productId) === token) {
+        setError(errorMessage(cause));
+        setDrafts(old => old.map(item => item.productId === productId ? { ...item, loading: false } : item));
+      }
+    }
   }
   function toggleProduct(productId: string) {
     userEdited.current = true;
     setError("");
-    if (selectedIds.has(productId)) { setDrafts(old => old.filter(item => item.productId !== productId)); return; }
+    if (selectedIds.has(productId)) {
+      prepareSequence.current.set(productId, (prepareSequence.current.get(productId) ?? 0) + 1);
+      setDrafts(old => old.filter(item => item.productId !== productId));
+      return;
+    }
     if (drafts.length >= 20) { setError("每批最多选择 20 个已保存商品。"); return; }
     setDrafts(old => [...old, { productId, loading: true }]); void prepareItem(productId).catch(cause => { if (alive.current) setError(errorMessage(cause)); });
   }
@@ -122,7 +160,7 @@ export function BatchStudio({ onDirty }: { onDirty?: (dirty: boolean) => void })
       pendingBatch.current.attempted = true;
       const result = await createBatch(input.data); if (!alive.current) return;
       pendingBatch.current = { input: input.data, draftKey: currentDraftKey, attempted: true, created: result }; setCurrent(result); savedSnapshot.current = draftKey; setNotice("批次已创建；需要点击“明确执行”才会开始任务。");
-      try { const page = await listBatches(0, 30); if (alive.current) setBatches(page.items); }
+      try { await loadHistory(0); }
       catch (cause) { if (alive.current) setNotice(`批次已创建，但历史列表刷新失败：${errorMessage(cause)}`); }
     }
     catch (cause) { if (alive.current) { setError(errorMessage(cause)); setNotice(`批次结果待确认；保留批次 requestId ${input.data.requestId} 及全部商品任务键，可核对后再重试。`); } }
@@ -133,13 +171,10 @@ export function BatchStudio({ onDirty }: { onDirty?: (dirty: boolean) => void })
     if (!pending || pending.created || busy) return;
     setBusy(true); setError("");
     try {
-      for (let offset = 0; alive.current; offset += 30) {
-        const page = await listBatches(offset, 30);
-        const found = page.items.find(item => item.requestId === pending.input.requestId);
-        if (found) { pending.created = found; setCurrent(found); setNotice("已核对到原批次记录，保留全部原任务键。"); return; }
-        if (offset + page.limit >= page.total) break;
-      }
-      if (alive.current) setNotice("暂未找到原批次记录，保留原 requestId；不会自动创建新批次。");
+      const page = await loadHistory(batchOffset);
+      const found = page?.items.find(item => item.requestId === pending.input.requestId);
+      if (found) { pending.created = found; setCurrent(found); setNotice("已核对到当前页的原批次记录，保留全部原任务键。"); return; }
+      if (alive.current) setNotice("当前页暂未找到原批次记录；可翻页继续核对，保留原 requestId，不会自动创建新批次。");
     } catch (cause) { if (alive.current) setError(errorMessage(cause)); }
     finally { if (alive.current) setBusy(false); }
   }
@@ -161,11 +196,17 @@ export function BatchStudio({ onDirty }: { onDirty?: (dirty: boolean) => void })
       // Keep the execute request explicit and await its durable response too.
       const result = await execution; if (!alive.current) return; seen = result; setCurrent(result);
       setNotice(`批次执行完成：${batchStatus(seen.status)}。`);
-      const page = await listBatches(0, 30); if (alive.current) setBatches(page.items);
+      await loadHistory(0);
     } catch (cause) { if (alive.current) setError(errorMessage(cause)); }
     finally { if (alive.current) setBusy(false); }
   }
-  async function viewBatch(id: string) { try { const value = await getBatch(id); if (alive.current) setCurrent(value); } catch (cause) { if (alive.current) setError(errorMessage(cause)); } }
+  async function viewBatch(id: string) {
+    detailRequest.current?.abort();
+    const controller = new AbortController(); detailRequest.current = controller;
+    const token = ++detailSequence.current;
+    try { const value = await getBatch(id, controller.signal); if (alive.current && !controller.signal.aborted && token === detailSequence.current) setCurrent(value); }
+    catch (cause) { if (alive.current && !controller.signal.aborted && token === detailSequence.current) setError(errorMessage(cause)); }
+  }
   async function retryFailed() {
     if (!current || busy) return;
     const failed = current.items.filter(item => item.status === "failed" || item.status === "interrupted");
@@ -177,7 +218,7 @@ export function BatchStudio({ onDirty }: { onDirty?: (dirty: boolean) => void })
         const next = GenerateContentSchema.parse({ ...item.input, requestId: randomRequestId(), sourceRevisionId: detail.currentRevision.id, baseContentVersionId: content.headVersionId });
         return { productId: item.productId, input: next };
       }));
-      const result = await createBatch({ requestId: randomRequestId(), items }); if (!alive.current) return; setCurrent(result); setNotice("已为失败项创建新批次；成功项未重试，也未自动执行。"); const page = await listBatches(0, 30); if (alive.current) setBatches(page.items);
+      const result = await createBatch({ requestId: randomRequestId(), items }); if (!alive.current) return; setCurrent(result); setNotice("已为失败项创建新批次；成功项未重试，也未自动执行。"); await loadHistory(0);
     } catch (cause) { if (alive.current) setError(errorMessage(cause)); }
     finally { if (alive.current) setBusy(false); }
   }
@@ -190,10 +231,10 @@ export function BatchStudio({ onDirty }: { onDirty?: (dirty: boolean) => void })
   }
 
   return <main className="products-page batch-page"><header className="products-page-heading"><div><p className="products-eyebrow">批量文案</p><h1>批量任务</h1><p>每个商品固定当前资料和文案基准版本；创建与执行分开，失败项只能显式创建新批次重试。</p></div><button type="button" disabled={loading || busy} onClick={() => void load().catch(cause => { if (alive.current) setError(errorMessage(cause)); })}>刷新批次</button></header>
-    {error ? <p className="products-error" role="alert">{error}</p> : null}{notice ? <p className="studio-notice" role="status">{notice}</p> : null}
+    {error ? <p className="products-error" role="alert">{error}<button type="button" disabled={loading || busy} onClick={() => void loadHistory(requestedHistoryOffset.current).catch(cause => { if (alive.current) setError(errorMessage(cause)); })}>重试读取批次</button></p> : null}{notice ? <p className="studio-notice" role="status">{notice}</p> : null}
     <section className="studio-card"><div className="studio-heading"><h2>选择已保存商品（最多 20 个）</h2><span>{drafts.length}/20</span></div><div className="batch-product-grid">{products.map(item => <label key={item.product.id} className={selectedIds.has(item.product.id) ? "selected" : ""}><input type="checkbox" checked={selectedIds.has(item.product.id)} onChange={() => toggleProduct(item.product.id)} /><span>{item.name}<small>{item.product.sku} · 资料 v{item.revisionNumber}</small></span></label>)}</div><p className="studio-help">批次输入会固定选中商品的资料版本和最新文案版本；知识版本需在各商品工作台先确认。</p></section>
     <section className="studio-card"><div className="studio-heading"><div><h2>任务输入</h2><p>默认模板模式；每个商品关键词仍可单独编辑。</p></div><button type="button" onClick={applyCommonKeywords} disabled={!drafts.length}>将公共关键词应用到全部</button></div><label>公共关键词（每行一词）<textarea rows={3} value={commonKeywords} onChange={e => setCommonKeywords(e.target.value)} /></label>{drafts.map(item => <div className="batch-item" key={item.productId}><strong>{item.detail?.currentRevision.brief.name ?? item.productId}</strong>{item.loading ? <span>正在读取当前资料…</span> : item.input ? <><span>资料 {item.input.sourceRevisionId.slice(0, 8)}… · 基准文案 {item.input.baseContentVersionId?.slice(0, 8) ?? "无"}…</span><label>关键词<textarea rows={2} value={item.input.keywords.join("\n")} onChange={e => updateKeywords(item.productId, e.target.value)} /></label></> : <span>读取失败，请取消选择后重试。</span>}</div>)}<label>完整批次 JSON（可选，需符合共享契约）<textarea rows={8} value={advancedJson} onChange={e => setAdvancedJson(e.target.value)} placeholder={'{"requestId":"…","items":[…]}'} /></label><div className="studio-actions"><button type="button" disabled={busy || !advancedJson.trim()} onClick={() => { try { applyJson(); } catch (cause) { setError(errorMessage(cause)); } }}>载入 JSON</button><button className="products-primary" type="button" disabled={busy || drafts.length === 0 || drafts.some(item => item.loading || !item.input)} onClick={() => void create().catch(cause => { if (alive.current) setError(errorMessage(cause)); })}>只创建批次</button>{pendingBatch.current?.attempted && !pendingBatch.current.created ? <button type="button" disabled={busy} onClick={() => void reconcilePending().catch(cause => { if (alive.current) setError(errorMessage(cause)); })}>核对批次 {pendingBatch.current.input.requestId.slice(0, 8)}…</button> : null}{dirty ? <span className="studio-dirty">批次输入有未保存内容</span> : null}</div></section>
-    <section className="studio-card"><div className="studio-heading"><h2>批次记录</h2><span>不会自动执行历史待执行任务</span></div>{batches.length ? <ul className="studio-history-list">{batches.map(item => <li key={item.id}><button type="button" onClick={() => void viewBatch(item.id).catch(cause => { if (alive.current) setError(errorMessage(cause)); })}>{item.id.slice(0, 8)}…</button> <span>{batchStatus(item.status)} · {item.items.length} 项</span></li>)}</ul> : <p>暂无批次记录。</p>}{current ? <article className="studio-detail"><h3>当前批次 {current.id.slice(0, 8)}… · {batchStatus(current.status)}</h3><ul>{current.items.map(item => <li key={item.id}>{item.productId.slice(0, 8)}… · {batchStatus(item.status)}{item.errorMessage ? ` · ${item.errorMessage}` : ""}</li>)}</ul><div className="studio-actions"><button type="button" disabled={busy || current.status !== "queued"} onClick={() => void execute().catch(cause => { if (alive.current) setError(errorMessage(cause)); })}>明确执行</button><button type="button" disabled={busy || !current.items.some(item => item.status === "failed" || item.status === "interrupted")} onClick={() => void retryFailed().catch(cause => { if (alive.current) setError(errorMessage(cause)); })}>失败项新建重试批次</button></div></article> : null}</section>
+    <section className="studio-card"><div className="studio-heading"><h2>批次记录</h2><span>不会自动执行历史待执行任务</span></div>{batches.length ? <ul className="studio-history-list">{batches.map(item => <li key={item.id}><button type="button" onClick={() => void viewBatch(item.id).catch(cause => { if (alive.current) setError(errorMessage(cause)); })}>{item.id.slice(0, 8)}…</button> <span>{batchStatus(item.status)} · {item.items.length} 项</span></li>)}</ul> : <p>当前页暂无批次记录。</p>}{batchPage && batchPage.total > batchPage.limit ? <div className="products-pagination"><button type="button" disabled={loading || busy || batchPage.offset === 0} onClick={() => void loadHistory(Math.max(0, batchPage.offset - batchPage.limit)).catch(cause => { if (alive.current) setError(errorMessage(cause)); })}>上一页批次</button><span>共 {batchPage.total} 个批次</span><button type="button" disabled={loading || busy || batchPage.offset + batchPage.limit >= batchPage.total} onClick={() => void loadHistory(batchPage.offset + batchPage.limit).catch(cause => { if (alive.current) setError(errorMessage(cause)); })}>下一页批次</button></div> : null}{current ? <article className="studio-detail"><h3>当前批次 {current.id.slice(0, 8)}… · {batchStatus(current.status)}</h3><ul>{current.items.map(item => <li key={item.id}>{item.productId.slice(0, 8)}… · {batchStatus(item.status)}{item.errorMessage ? ` · ${item.errorMessage}` : ""}</li>)}</ul><div className="studio-actions"><button type="button" disabled={busy || current.status !== "queued"} onClick={() => void execute().catch(cause => { if (alive.current) setError(errorMessage(cause)); })}>明确执行</button><button type="button" disabled={busy || !current.items.some(item => item.status === "failed" || item.status === "interrupted")} onClick={() => void retryFailed().catch(cause => { if (alive.current) setError(errorMessage(cause)); })}>失败项新建重试批次</button></div></article> : null}</section>
     <section className="studio-card"><div className="studio-heading"><h2>导入商品 JSON（最多 20 个）</h2><label className="studio-file-input">选择 JSON <input type="file" accept="application/json,.json" disabled={importBusy} onChange={e => void importFile(e.target.files?.[0]).catch(cause => { if (alive.current) setError(errorMessage(cause)); })} /></label></div>{importResult ? <ul className="studio-import-results">{importResult.map(item => <li key={item.index}>{item.index + 1}. {item.sku} · {item.status === "created" ? `已创建 ${item.productId ?? ""}` : `失败 ${item.errorMessage ?? ""}${item.productId ? `（已有商品 ${item.productId}）` : ""}`}</li>)}</ul> : <p>导入结果会逐项显示；导入失败不会覆盖已有商品。</p>}</section>
   </main>;
 }

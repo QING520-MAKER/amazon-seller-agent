@@ -78,7 +78,7 @@ export const reviewContent = (productId: string, versionId: string, input: Conte
   json(`/${productId}/content/${versionId}/reviews`, ContentReviewSchema, body("POST", input));
 
 export const getContentExport = (productId: string, versionId: string, draft: boolean, signal?: AbortSignal) =>
-  json(`/${productId}/content/${versionId}/export?draft=${draft ? "1" : "0"}`, ContentExportSchema, { signal });
+  json(`/${productId}/content/${versionId}/export${draft ? "?draft=1" : ""}`, ContentExportSchema, { signal });
 
 export const randomRequestId = () => {
   if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") return crypto.randomUUID();

@@ -7,7 +7,7 @@ import { ContentStudio } from "../apps/web/src/content/ContentStudio.js";
 
 const mocks = vi.hoisted(() => ({
   listContent: vi.fn(), getContentDetail: vi.fn(), generateContent: vi.fn(), saveContent: vi.fn(),
-  listContentRuns: vi.fn(), reviewContent: vi.fn(), getContentExport: vi.fn(), randomRequestId: vi.fn(() => "30000000-0000-4000-8000-000000000001"),
+  listContentRuns: vi.fn(), reviewContent: vi.fn(), randomRequestId: vi.fn(() => "30000000-0000-4000-8000-000000000001"),
 }));
 const requestMocks = vi.hoisted(() => ({ executeRequest: vi.fn() }));
 vi.mock("../apps/web/src/content/api.js", async importOriginal => ({ ...await importOriginal<typeof import("../apps/web/src/content/api.js")>(), ...mocks }));
@@ -67,6 +67,24 @@ describe("content studio", () => {
     await waitFor(() => expect(mocks.saveContent).toHaveBeenCalledWith(productId, expect.objectContaining({ baseContentVersionId: generated.id, copy: expect.objectContaining({ title: "Edited travel mug" }) })));
   });
 
+  it("resets review notes when saving a new content version", async () => {
+    const saved = { ...version(), id: "30000000-0000-4000-8000-000000000003", versionNumber: 2, parentVersionId: versionId, source: "manual" as const };
+    mocks.reviewContent.mockResolvedValue({ id: "50000000-0000-4000-8000-000000000001", contentVersionId: versionId, decision: "approved", notes: "Reviewed version 1", createdAt: "2026-09-20T00:00:00.000Z" });
+    mocks.saveContent.mockResolvedValue(saved);
+    mocks.getContentDetail.mockImplementation(async (_productId, id) => ({ ...detail(), content: id === saved.id ? saved : version() }));
+    renderStudio();
+    await screen.findByText("文案版本历史");
+    fireEvent.change(screen.getByLabelText("审核备注"), { target: { value: "Reviewed version 1" } });
+    fireEvent.click(screen.getByRole("button", { name: "人工批准" }));
+    await waitFor(() => expect(mocks.reviewContent).toHaveBeenCalledWith(productId, versionId, { decision: "approved", notes: "Reviewed version 1" }));
+    fireEvent.click(screen.getByRole("button", { name: "编辑当前版本" }));
+    fireEvent.change(screen.getByLabelText("英文标题"), { target: { value: "New saved version" } });
+    fireEvent.click(screen.getByRole("button", { name: "保存新版本" }));
+    await waitFor(() => expect(mocks.saveContent).toHaveBeenCalledWith(productId, expect.objectContaining({ baseContentVersionId: versionId, copy: expect.objectContaining({ title: "New saved version" }) })));
+    await waitFor(() => expect((screen.getByLabelText("审核备注") as HTMLTextAreaElement).value).toBe(""));
+    expect(screen.queryByText("审核备注尚未提交，请选择批准或退回以保存审核记录。")).toBeNull();
+  });
+
   it("shows a failed run and preserves the request for reconciliation", async () => {
     mocks.generateContent.mockResolvedValue({ run: run("failed"), content: null, reused: false });
     renderStudio();
@@ -95,7 +113,9 @@ describe("content studio", () => {
     fireEvent.click(screen.getByRole("button", { name: "编辑当前版本" }));
     fireEvent.change(screen.getByLabelText("英文标题"), { target: { value: "Unsaved local changes" } });
     expect((screen.getByRole("button", { name: "人工批准" }) as HTMLButtonElement).disabled).toBe(true);
-    expect((screen.getByRole("button", { name: "下载草稿 JSON" }) as HTMLButtonElement).disabled).toBe(true);
+    const draftLink = screen.getByRole("link", { name: "下载草稿 JSON" });
+    expect(draftLink.getAttribute("aria-disabled")).toBe("true");
+    expect(draftLink.getAttribute("href")).toBeNull();
     const next = { ...version(), id: "30000000-0000-4000-8000-000000000099", versionNumber: 2 };
     mocks.listContent.mockResolvedValue({ ...page(), headVersionId: next.id, items: [next, version()], total: 2 });
     fireEvent.click(screen.getByRole("button", { name: "刷新记录" }));
@@ -114,5 +134,56 @@ describe("content studio", () => {
     expect(confirm).toHaveBeenCalled();
     expect((screen.getByLabelText("英文标题") as HTMLInputElement).value).toBe("Keep this draft");
     confirm.mockRestore();
+  });
+
+  it("paginates versions and runs independently while retaining the edited draft", async () => {
+    const older = { ...version(), id: "30000000-0000-4000-8000-000000000099", versionNumber: 2 };
+    mocks.listContent.mockImplementation(async (_id: string, offset: number) => offset === 20
+      ? { items: [older], total: 21, limit: 20, offset: 20, headVersionId: versionId }
+      : { ...page(), total: 21, limit: 20 });
+    mocks.listContentRuns.mockImplementation(async (_id: string, offset: number) => offset === 20
+      ? { items: [run("failed")], total: 21, limit: 20, offset: 20 }
+      : { items: [run()], total: 21, limit: 20, offset: 0 });
+    renderStudio();
+    await screen.findByText("文案版本历史");
+    fireEvent.click(screen.getByRole("button", { name: "编辑当前版本" }));
+    fireEvent.change(screen.getByLabelText("英文标题"), { target: { value: "Draft survives paging" } });
+
+    fireEvent.click(screen.getByRole("button", { name: "下一页文案" }));
+    await waitFor(() => expect(mocks.listContent).toHaveBeenCalledWith(productId, 20, 20, expect.any(AbortSignal)));
+    expect((screen.getByLabelText("英文标题") as HTMLInputElement).value).toBe("Draft survives paging");
+
+    fireEvent.click(screen.getByRole("button", { name: "下一页生成记录" }));
+    await waitFor(() => expect(mocks.listContentRuns).toHaveBeenCalledWith(productId, 20, 20, expect.any(AbortSignal)));
+    await screen.findByText("失败");
+    expect((screen.getByLabelText("英文标题") as HTMLInputElement).value).toBe("Draft survives paging");
+  });
+
+  it("keeps the latest version number visible when an edited draft crosses to a page without the head item", async () => {
+    const head = { ...version(), id: "30000000-0000-4000-8000-000000000034", versionNumber: 34, copy: { ...copy, title: "Version 34" } };
+    const older = { ...version(), id: "30000000-0000-4000-8000-000000000099", versionNumber: 33 };
+    mocks.listContent.mockImplementation(async (_id: string, offset: number) => offset === 20
+      ? { items: [older], total: 21, limit: 20, offset: 20, headVersionId: head.id }
+      : { items: [head], total: 21, limit: 20, offset: 0, headVersionId: head.id });
+    mocks.getContentDetail.mockResolvedValue({ ...detail(), content: head });
+    renderStudio();
+    await screen.findByText("文案版本历史");
+    fireEvent.click(screen.getByRole("button", { name: "编辑当前版本" }));
+    fireEvent.change(screen.getByLabelText("英文标题"), { target: { value: "Draft survives with v34" } });
+
+    fireEvent.click(screen.getByRole("button", { name: "下一页文案" }));
+    await waitFor(() => expect(mocks.listContent).toHaveBeenCalledWith(productId, 20, 20, expect.any(AbortSignal)));
+    expect(screen.getByText("最新版本 v34")).toBeTruthy();
+    expect((screen.getByLabelText("英文标题") as HTMLInputElement).value).toBe("Draft survives with v34");
+  });
+
+  it("retries a failed history page at the requested offset", async () => {
+    mocks.listContent.mockImplementationOnce(async () => ({ ...page(), total: 21, limit: 20 })).mockRejectedValueOnce(new Error("history unavailable")).mockResolvedValue({ ...page(), total: 21, limit: 20, offset: 20, items: [] });
+    renderStudio();
+    await screen.findByText("文案版本历史");
+    fireEvent.click(screen.getByRole("button", { name: "下一页文案" }));
+    await screen.findByText("history unavailable");
+    fireEvent.click(screen.getByRole("button", { name: "重试读取文案" }));
+    await waitFor(() => expect(mocks.listContent).toHaveBeenLastCalledWith(productId, 20, 20, expect.any(AbortSignal)));
   });
 });

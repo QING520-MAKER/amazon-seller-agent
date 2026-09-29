@@ -369,3 +369,7 @@ body { margin: 0; }
 .studio-choice-list label, .batch-product-grid label { display: flex; align-items: center; gap: .55rem; }
 .products-heading-actions { display: flex; align-items: center; flex-wrap: wrap; gap: .55rem; }
 @media (max-width: 760px) { .studio-columns, .studio-compare { grid-template-columns: 1fr; } .studio-heading { flex-direction: column; } }
+.studio-download { display: inline-block; padding: 8px 12px; border: 1px solid #d9dfe8; border-radius: 8px; background: #fff; color: #2440a6; text-decoration: none; }
+.studio-download:hover { border-color: #3455f5; }
+.studio-download:focus-visible { outline: 2px solid #3455f5; outline-offset: 2px; }
+.studio-download[aria-disabled="true"] { color: #8a93a3; background: #f4f5f8; cursor: not-allowed; }

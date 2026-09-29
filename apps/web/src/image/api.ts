@@ -11,6 +11,9 @@ import {
 } from "../../../../src/schemas.js";
 import { CatalogApiError } from "../products/api.js";
 
+export const IMAGE_CANDIDATE_PAGE_SIZE = 20;
+export const IMAGE_RUN_PAGE_SIZE = 20;
+
 async function request(path: string, init: RequestInit = {}) {
   const write = init.method !== undefined && init.method !== "GET";
   try { return await fetch(`/api/products${path}`, init); }
@@ -41,9 +44,9 @@ async function json<S extends z.ZodTypeAny>(path: string, schema: S, init: Reque
 
 const body = (method: string, value: unknown): RequestInit => ({ method, headers: { "Content-Type": "application/json" }, body: JSON.stringify(value) });
 
-export const listImages = (productId: string, offset = 0, limit = 20, signal?: AbortSignal) =>
+export const listImages = (productId: string, offset = 0, limit = IMAGE_CANDIDATE_PAGE_SIZE, signal?: AbortSignal) =>
   json(`/${productId}/images?${new URLSearchParams({ limit: String(limit), offset: String(offset) })}`, ImagePageSchema, { signal });
-export const listImageRuns = (productId: string, offset = 0, limit = 20, signal?: AbortSignal) =>
+export const listImageRuns = (productId: string, offset = 0, limit = IMAGE_RUN_PAGE_SIZE, signal?: AbortSignal) =>
   json(`/${productId}/images/runs?${new URLSearchParams({ limit: String(limit), offset: String(offset) })}`, ImageRunPageSchema, { signal });
 export const generateImage = (productId: string, input: GenerateImage) =>
   json(`/${productId}/images/generate`, GenerateImageResultSchema, body("POST", input));

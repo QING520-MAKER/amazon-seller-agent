@@ -17,10 +17,10 @@ import {
   CatalogApiError,
   errorMessage,
 } from "../products/api.js";
+import { DownloadLink, contentDownloadUrl } from "../shared/DownloadLink.js";
 import {
   generateContent,
   getContentDetail,
-  getContentExport,
   listContent,
   listContentRuns,
   randomRequestId,
@@ -31,6 +31,11 @@ import { formatTime } from "../products/shared.js";
 
 type ContentPage = ReturnType<typeof listContent> extends Promise<infer T> ? T : never;
 type RunPage = ReturnType<typeof listContentRuns> extends Promise<infer T> ? T : never;
+
+function headVersionNumber(page: ContentPage) {
+  if (!page.headVersionId) return undefined;
+  return page.items.find(item => item.id === page.headVersionId)?.versionNumber;
+}
 
 const parseLines = (value: string) => [...new Set(value.split(/\r?\n/).map(line => line.trim()).filter(Boolean))];
 
@@ -54,28 +59,6 @@ function statusLabel(status: ContentRun["status"]) {
 
 function sourceLabel(source: ContentVersion["source"]) {
   return { template: "本地模板", model: "文字模型", manual: "人工编辑" }[source];
-}
-
-function DownloadButton({ productId, versionId, draft, disabled, onMessage }: {
-  productId: string; versionId: string; draft: boolean; disabled?: boolean; onMessage: (message: string) => void;
-}) {
-  async function download() {
-    try {
-      const payload = await getContentExport(productId, versionId, draft);
-      const objectUrl = URL.createObjectURL(new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" }));
-      const link = document.createElement("a");
-      link.href = objectUrl;
-      link.download = `${payload.sku}-content-v${payload.detail.content.versionNumber}-${draft ? "draft" : "approved"}.json`;
-      document.body.append(link);
-      link.click();
-      link.remove();
-      window.setTimeout(() => URL.revokeObjectURL(objectUrl), 1000);
-      onMessage(`${draft ? "草稿" : "正式"} JSON 已准备下载。`);
-    } catch (error) {
-      onMessage(errorMessage(error));
-    }
-  }
-  return <button type="button" disabled={disabled} onClick={() => void download()}>{draft ? "下载草稿 JSON" : "下载正式 JSON"}</button>;
 }
 
 function CopyEditor({ copy, disabled, onChange }: { copy: ContentCopy; disabled: boolean; onChange: (copy: ContentCopy) => void }) {
@@ -112,10 +95,14 @@ export function ContentStudio({ product, knowledgeRevisionIds, onDirty, disabled
   const [pendingRequestId, setPendingRequestId] = useState("");
   const [reviewNotes, setReviewNotes] = useState("");
   const [reviewBaseline, setReviewBaseline] = useState("");
+  const [latestVersionNumber, setLatestVersionNumber] = useState<number>();
   const [revisionOffset, setRevisionOffset] = useState(0);
+  const [runOffset, setRunOffset] = useState(0);
   const sequence = useRef(0);
   const detailSequence = useRef(0);
   const loadController = useRef<AbortController | undefined>(undefined);
+  const requestedOffsets = useRef({ revisions: 0, runs: 0 });
+  const loadedProductId = useRef("");
   const alive = useRef(true);
 
   const copyDirty = Boolean(editing && draft && JSON.stringify(draft) !== baseline);
@@ -134,26 +121,30 @@ export function ContentStudio({ product, knowledgeRevisionIds, onDirty, disabled
     setReviewBaseline(selected.review?.notes ?? "");
   }, [product.product.id]);
 
-  const load = useCallback(async (offset = 0) => {
+  const load = useCallback(async (offset = 0, nextRunOffset = 0, resetDetail = false) => {
     loadController.current?.abort();
     const controller = new AbortController();
     loadController.current = controller;
     const token = ++sequence.current;
+    requestedOffsets.current = { revisions: offset, runs: nextRunOffset };
     setBusy("loading"); setError("");
     const [contentResult, runResult] = await Promise.allSettled([
       listContent(product.product.id, offset, 20, controller.signal),
-      listContentRuns(product.product.id, 0, 20, controller.signal),
+      listContentRuns(product.product.id, nextRunOffset, 20, controller.signal),
     ]);
     if (!alive.current || controller.signal.aborted || token !== sequence.current) return;
     if (contentResult.status === "fulfilled") {
       const nextPage = contentResult.value;
-      setPage(nextPage); setRevisionOffset(offset);
+      setPage(nextPage); setRevisionOffset(nextPage.offset);
+      const nextHeadVersionNumber = headVersionNumber(nextPage);
+      if (!nextPage.headVersionId) setLatestVersionNumber(undefined);
+      else if (nextHeadVersionNumber !== undefined) setLatestVersionNumber(nextHeadVersionNumber);
       const target = nextPage.headVersionId ?? nextPage.items[0]?.id;
-      if (target && !dirtyRef.current) {
+      if (resetDetail && target) {
         setDraft(undefined); setEditing(false); setBaseline(""); setDraftBaseId("");
         try { await showDetail(target, controller.signal); }
         catch (loadError) { if (!controller.signal.aborted) setError(errorMessage(loadError)); }
-      } else if (!target && !dirtyRef.current) {
+      } else if (resetDetail && !target) {
         setDetail(undefined); setDraft(undefined); setEditing(false); setBaseline("");
       } else if (dirtyRef.current) {
         setNotice("已刷新服务端记录，本地文案、审核备注与原保存基准保留。请提交或放弃编辑后查看其他版本。");
@@ -161,12 +152,24 @@ export function ContentStudio({ product, knowledgeRevisionIds, onDirty, disabled
     } else if (contentResult.reason instanceof Error && contentResult.reason.name !== "AbortError") {
       setError(errorMessage(contentResult.reason));
     }
-    if (runResult.status === "fulfilled") setRuns(runResult.value);
+    if (runResult.status === "fulfilled") { setRuns(runResult.value); setRunOffset(runResult.value.offset); }
     else if (runResult.reason instanceof Error && runResult.reason.name !== "AbortError") setError(errorMessage(runResult.reason));
+    loadedProductId.current = product.product.id;
     if (alive.current) setBusy(undefined);
   }, [product.product.id, showDetail]);
 
-  useEffect(() => { void load(); return () => { sequence.current += 1; loadController.current?.abort(); }; }, [load, product.currentRevision.id]);
+  useEffect(() => {
+    const productChanged = loadedProductId.current !== product.product.id;
+    if (productChanged) {
+      detailSequence.current += 1;
+      setPage(undefined); setRuns(undefined); setDetail(undefined); setDraft(undefined); setBaseline(""); setDraftBaseId("");
+      setLatestVersionNumber(undefined);
+      setRevisionOffset(0); setRunOffset(0); setReviewNotes(""); setReviewBaseline("");
+      setKeywords(""); setCandidates([]); setPendingRequestId(""); setConflict(false);
+    }
+    void load(productChanged ? 0 : revisionOffset, productChanged ? 0 : runOffset, productChanged);
+    return () => { sequence.current += 1; loadController.current?.abort(); };
+  }, [load, product.product.id, product.currentRevision.id]);
 
   function beginEdit() {
     if (disabled || editing || !detail || page?.headVersionId !== detail.content.id) return;
@@ -233,12 +236,14 @@ export function ContentStudio({ product, knowledgeRevisionIds, onDirty, disabled
       }
       const nextDetail = await getContentDetail(product.product.id, result.content.id);
       if (!alive.current) return;
-      setPage(current => current ? { ...current, headVersionId: result.content!.id, total: current.total + (current.items.some(item => item.id === result.content!.id) ? 0 : 1), items: [result.content!, ...current.items.filter(item => item.id !== result.content!.id)].slice(0, current.limit) } : current);
+      setRevisionOffset(0);
+      setLatestVersionNumber(result.content.versionNumber);
+      setPage(current => current ? { ...current, offset: 0, headVersionId: result.content!.id, total: current.total + (current.items.some(item => item.id === result.content!.id) ? 0 : 1), items: [result.content!, ...current.items.filter(item => item.id !== result.content!.id)].slice(0, current.limit) } : current);
       setDetail(nextDetail); setDraft(structuredClone(result.content.copy)); setBaseline(JSON.stringify(result.content.copy)); setEditing(true);
       setReviewNotes(nextDetail.review?.notes ?? ""); setReviewBaseline(nextDetail.review?.notes ?? "");
       setDraftBaseId(result.content.id);
       setNotice(result.reused ? "已读取同一请求 ID 的既有生成结果。" : "文案已生成，请逐项核对事实后保存或审核。");
-      setRuns(current => current ? { ...current, items: [result.run, ...current.items.filter(item => item.id !== result.run.id)] } : current);
+      setRuns(current => current && current.offset === 0 ? { ...current, total: current.total + (current.items.some(item => item.id === result.run.id) ? 0 : 1), items: [result.run, ...current.items.filter(item => item.id !== result.run.id)].slice(0, current.limit) } : current);
     } catch (generateError) {
       if (alive.current) {
         setError(errorMessage(generateError));
@@ -251,11 +256,11 @@ export function ContentStudio({ product, knowledgeRevisionIds, onDirty, disabled
     if (!pendingRequestId || busy) return;
     setBusy("reconciling"); setError("");
     try {
-      const result = await listContentRuns(product.product.id, 0, 100);
+      const result = await listContentRuns(product.product.id, runs?.offset ?? runOffset, runs?.limit ?? 20);
       if (!alive.current) return;
       const run = result.items.find(item => item.requestId === pendingRequestId);
       if (!run) { setNotice("服务器暂未找到这次请求记录；请稍后再次核对，不会自动创建新请求。"); return; }
-      setRuns(result);
+      setRuns(result); setRunOffset(result.offset);
       if (run.status === "succeeded" && run.contentVersionId) {
         if (!dirtyRef.current) { setDraft(undefined); setEditing(false); await showDetail(run.contentVersionId); }
         setNotice("已找到本次请求生成的版本。");
@@ -276,8 +281,9 @@ export function ContentStudio({ product, knowledgeRevisionIds, onDirty, disabled
       if (!alive.current) return;
       const nextDetail = await getContentDetail(product.product.id, version.id);
       if (!alive.current) return;
-      setDetail(nextDetail); setPage(current => current ? { ...current, headVersionId: version.id, total: current.total + (current.items.some(item => item.id === version.id) ? 0 : 1), items: [version, ...current.items.filter(item => item.id !== version.id)].slice(0, current.limit) } : current);
+      setDetail(nextDetail); setRevisionOffset(0); setLatestVersionNumber(version.versionNumber); setPage(current => current ? { ...current, offset: 0, headVersionId: version.id, total: current.total + (current.items.some(item => item.id === version.id) ? 0 : 1), items: [version, ...current.items.filter(item => item.id !== version.id)].slice(0, current.limit) } : current);
       setDraft(structuredClone(version.copy)); setBaseline(JSON.stringify(version.copy)); setEditing(true);
+      setReviewNotes(""); setReviewBaseline("");
       setDraftBaseId(version.id);
       setNotice("人工编辑已保存为新的文案版本。");
     } catch (saveError) {
@@ -293,9 +299,12 @@ export function ContentStudio({ product, knowledgeRevisionIds, onDirty, disabled
     if (dirty && !window.confirm("重载会放弃未提交的文案或审核备注，确定继续？")) return;
     setBusy("loading"); setError("");
     try {
-      const fresh = await listContent(product.product.id, 0, 20);
+      const fresh = await listContent(product.product.id, 0, page?.limit ?? 20);
       if (!alive.current) return;
-      setPage(fresh); setRevisionOffset(0);
+      requestedOffsets.current.revisions = 0; setPage(fresh); setRevisionOffset(fresh.offset);
+      const freshHeadVersionNumber = headVersionNumber(fresh);
+      if (!fresh.headVersionId) setLatestVersionNumber(undefined);
+      else if (freshHeadVersionNumber !== undefined) setLatestVersionNumber(freshHeadVersionNumber);
       if (fresh.headVersionId) await showDetail(fresh.headVersionId);
       setDraft(undefined); setBaseline(""); setEditing(false); onDirty?.(false); setNotice("已重载当前最新文案版本。");
       setConflict(false);
@@ -336,8 +345,8 @@ export function ContentStudio({ product, knowledgeRevisionIds, onDirty, disabled
 
   return <section className="products-card content-studio" aria-labelledby="content-studio-heading">
     <div className="products-section-heading"><div><p className="products-eyebrow">US · en_US · SKU {product.product.sku} · 当前资料版本 {product.currentRevision.revisionNumber}</p><h2 id="content-studio-heading">商品文案工作室</h2><p>文案版本绑定当前商品资料；生成结果必须人工核对后审核。</p></div>
-      <span className="content-head-badge">{page?.headVersionId ? `最新版本 v${page.items.find(item => item.id === page.headVersionId)?.versionNumber ?? "?"}` : "尚无文案"}</span></div>
-    {error ? <div className="products-error" role="alert">{error}<button type="button" onClick={() => void load(revisionOffset)}>重试读取文案</button>{conflict ? <button type="button" onClick={() => void reloadHead()}>重载最新版本</button> : null}</div> : null}
+      <span className="content-head-badge">{page?.headVersionId ? `最新版本 v${latestVersionNumber ?? "?"}` : "尚无文案"}</span></div>
+    {error ? <div className="products-error" role="alert">{error}<button type="button" onClick={() => void load(requestedOffsets.current.revisions, requestedOffsets.current.runs)}>重试读取文案</button>{conflict ? <button type="button" onClick={() => void reloadHead()}>重载最新版本</button> : null}</div> : null}
     <div className="content-generation-panel">
       <label>关键词（每行一个）<textarea aria-label="文案关键词" rows={4} disabled={Boolean(busy) || disabled} value={keywords} onChange={event => setKeywords(event.target.value)} placeholder="输入真实关键词；第一行会作为主词" /></label>
       <div className="content-keyword-toolbar"><span>{keywordList.length ? `主词：${keywordList[0]} · 已选 ${keywordList.length}/50` : "尚未选择关键词"}</span><button type="button" disabled={Boolean(busy) || disabled} onClick={() => void research()}>从关键词研究获取候选</button></div>
@@ -348,7 +357,7 @@ export function ContentStudio({ product, knowledgeRevisionIds, onDirty, disabled
     </div>
     {pendingRequestId && (error || busy === "reconciling") ? <div className="content-uncertain"><span>本次请求 ID：<code>{pendingRequestId}</code></span><button type="button" disabled={Boolean(busy)} onClick={() => void reconcile()}>{busy === "reconciling" ? "正在核对…" : "核对生成记录"}</button></div> : null}
     {notice ? <p className="content-notice" role="status">{notice}</p> : null}
-    {page?.items.length ? <div className="content-history"><div className="products-section-heading"><h3>文案版本历史</h3><span>选择历史版本只查看快照，不改变最新版本。</span></div><div className="products-version-list">{page.items.map(version => <button type="button" key={version.id} disabled={Boolean(busy)} aria-pressed={detail?.content.id === version.id} onClick={() => void selectVersion(version.id)}><strong>v{version.versionNumber}{version.id === page.headVersionId ? " · 最新版本" : " · 历史"}</strong><small>{sourceLabel(version.source)} · {formatTime(version.createdAt)}</small></button>)}</div>{page.total > page.limit ? <div className="products-pagination"><button disabled={Boolean(busy) || revisionOffset === 0} onClick={() => void load(Math.max(0, revisionOffset - page.limit))}>上一页文案</button><span>共 {page.total} 个版本</span><button disabled={Boolean(busy) || revisionOffset + page.limit >= page.total} onClick={() => void load(revisionOffset + page.limit)}>下一页文案</button></div> : null}</div> : null}
+    {page ? <div className="content-history"><div className="products-section-heading"><h3>文案版本历史</h3><span>选择历史版本只查看快照，不改变最新版本。</span></div>{page.items.length ? <div className="products-version-list">{page.items.map(version => <button type="button" key={version.id} disabled={Boolean(busy)} aria-pressed={detail?.content.id === version.id} onClick={() => void selectVersion(version.id)}><strong>v{version.versionNumber}{version.id === page.headVersionId ? " · 最新版本" : " · 历史"}</strong><small>{sourceLabel(version.source)} · {formatTime(version.createdAt)}</small></button>)}</div> : <p>当前页没有文案版本。</p>}{page.total > page.limit ? <div className="products-pagination"><button disabled={Boolean(busy) || page.offset === 0} onClick={() => void load(Math.max(0, page.offset - page.limit), runOffset)}>上一页文案</button><span>共 {page.total} 个版本</span><button disabled={Boolean(busy) || page.offset + page.limit >= page.total} onClick={() => void load(page.offset + page.limit, runOffset)}>下一页文案</button></div> : null}</div> : null}
     {detail ? <>
       <div className="content-version-strip"><div><strong>文案 v{detail.content.versionNumber}</strong><span> · {sourceLabel(detail.content.source)} · 创建于 {formatTime(detail.content.createdAt)}</span>{isHead ? <b> · 最新版本</b> : <em> · 历史只读</em>}</div><div className="products-actions"><button type="button" disabled={disabled || !isHead || Boolean(busy)} onClick={beginEdit}>{editing ? "正在编辑" : "编辑当前版本"}</button>{editing ? <><button type="button" disabled={Boolean(busy)} onClick={cancelEdit}>取消编辑</button><button type="button" className="products-primary" disabled={Boolean(busy) || disabled || !copyDirty} onClick={() => void save()}>{busy === "saving" ? "正在保存…" : "保存新版本"}</button></> : null}</div></div>
       {detail.stale ? <div className="products-conflict"><strong>依据已过期，不能批准或正式导出。</strong><p>{detail.staleReasons.join("、")}</p><button type="button" disabled={Boolean(busy) || disabled} onClick={() => void generate()}>用当前资料重新生成</button></div> : null}
@@ -361,12 +370,12 @@ export function ContentStudio({ product, knowledgeRevisionIds, onDirty, disabled
         <div className="products-actions">
           <button type="button" disabled={Boolean(busy) || disabled || copyDirty || detail.stale || !isHead} onClick={() => void submitReview("approved")}>人工批准</button>
           <button type="button" disabled={Boolean(busy) || disabled || copyDirty || !isHead} onClick={() => void submitReview("rejected")}>退回修改</button>
-          <DownloadButton productId={product.product.id} versionId={detail.content.id} draft disabled={Boolean(busy) || dirty} onMessage={setNotice} />
-          <DownloadButton productId={product.product.id} versionId={detail.content.id} draft={false} disabled={officialDisabled} onMessage={setNotice} />
+          <DownloadLink href={contentDownloadUrl(product.product.id, detail.content.id, true)} disabled={Boolean(busy) || dirty}>下载草稿 JSON</DownloadLink>
+          <DownloadLink href={contentDownloadUrl(product.product.id, detail.content.id, false)} disabled={officialDisabled}>下载正式 JSON</DownloadLink>
         </div>
       </div>
       <div className="content-evidence"><p><strong>生成时的资料版本：</strong><code>{detail.content.sourceRevisionId}</code> · 规则版本 {detail.content.rulesVersion}</p><p><strong>覆盖率：</strong>{detail.content.coverage.coveragePct}% · 未覆盖 {detail.content.coverage.uncovered.length ? detail.content.coverage.uncovered.join("、") : "无"}</p><details><summary>查看来源与依据（{detail.content.evidence.length} 条）</summary>{detail.content.evidence.length ? <ul>{detail.content.evidence.map(item => <li key={`${item.entryId}-${item.revisionId}`}><strong>{item.title}</strong> · {item.source}<p>{item.content}</p></li>)}</ul> : <p>当前版本没有附加知识依据。</p>}</details></div>
     </> : <p className="products-empty">还没有文案版本。输入真实关键词后选择模板或 AI 模式生成。</p>}
-    <div className="content-runs"><div className="products-section-heading"><h3>最近生成记录</h3><button type="button" disabled={Boolean(busy)} onClick={() => void load(revisionOffset)}>刷新记录</button></div>{runs?.items.length ? <ul>{runs.items.map(run => <li key={run.id}><span><strong>{statusLabel(run.status)}</strong> · {run.mode === "template" ? "模板" : "AI"} · {formatTime(run.startedAt)}</span>{run.status === "failed" || run.status === "interrupted" ? <span className="content-run-error">{run.errorMessage ?? run.errorCode}</span> : run.contentVersionId ? <button type="button" disabled={Boolean(busy)} onClick={() => void selectVersion(run.contentVersionId!)}>查看版本</button> : null}</li>)}</ul> : <p>尚无生成记录。</p>}</div>
+    <div className="content-runs"><div className="products-section-heading"><h3>最近生成记录</h3><button type="button" disabled={Boolean(busy)} onClick={() => void load(revisionOffset, runOffset)}>刷新记录</button></div>{runs?.items.length ? <ul>{runs.items.map(run => <li key={run.id}><span><strong>{statusLabel(run.status)}</strong> · {run.mode === "template" ? "模板" : "AI"} · {formatTime(run.startedAt)}</span>{run.status === "failed" || run.status === "interrupted" ? <span className="content-run-error">{run.errorMessage ?? run.errorCode}</span> : run.contentVersionId ? <button type="button" disabled={Boolean(busy)} onClick={() => void selectVersion(run.contentVersionId!)}>查看版本</button> : null}</li>)}</ul> : <p>尚无生成记录。</p>}{runs && runs.total > runs.limit ? <div className="products-pagination"><button disabled={Boolean(busy) || runs.offset === 0} onClick={() => void load(revisionOffset, Math.max(0, runs.offset - runs.limit))}>上一页生成记录</button><span>共 {runs.total} 条记录</span><button disabled={Boolean(busy) || runs.offset + runs.limit >= runs.total} onClick={() => void load(revisionOffset, runs.offset + runs.limit)}>下一页生成记录</button></div> : null}</div>
   </section>;
 }

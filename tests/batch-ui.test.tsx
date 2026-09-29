@@ -34,6 +34,26 @@ describe("batch studio", () => {
     await waitFor(() => expect(batchMocks.executeBatch).toHaveBeenCalledWith(batch().id), { timeout: 3000 });
   });
 
+  it("ignores a stale product preparation after canceling and reselecting the same product", async () => {
+    const refreshedRevisionId = "21000000-0000-4000-8000-000000000002";
+    const firstContent = { items: [], total: 0, limit: 30, offset: 0, headVersionId: "31000000-0000-4000-8000-000000000001" };
+    const secondContent = { ...firstContent, headVersionId: "31000000-0000-4000-8000-000000000002" };
+    let releaseFirst: (value: ProductDetail) => void = () => undefined;
+    const firstDetail = detail;
+    const secondDetail = { ...detail, currentRevision: { ...detail.currentRevision, id: refreshedRevisionId } };
+    productMocks.getProduct.mockImplementationOnce(() => new Promise(resolve => { releaseFirst = resolve; })).mockResolvedValueOnce(secondDetail);
+    contentMocks.listContent.mockImplementationOnce(async () => firstContent).mockResolvedValueOnce(secondContent);
+    render(<BatchStudio />);
+    const checkbox = await screen.findByRole("checkbox");
+    fireEvent.click(checkbox);
+    fireEvent.click(checkbox);
+    fireEvent.click(checkbox);
+    await screen.findByText(new RegExp(`资料 ${refreshedRevisionId.slice(0, 8)}`));
+    releaseFirst(firstDetail);
+    await waitFor(() => expect(screen.getByText(new RegExp(`资料 ${refreshedRevisionId.slice(0, 8)}`))).toBeTruthy());
+    expect(screen.queryByText(new RegExp(`资料 ${sourceRevisionId.slice(0, 8)}`))).toBeNull();
+  });
+
   it("shows each import result and keeps existing product ids visible", async () => {
     batchMocks.importProducts.mockResolvedValue({ items: [{ index: 0, sku: "SKU-A", productId, status: "failed", errorCode: "SKU_EXISTS", errorMessage: "已有 SKU" }] });
     render(<BatchStudio />);
@@ -85,5 +105,34 @@ describe("batch studio", () => {
     const second = batchMocks.createBatch.mock.calls[1]![0];
     expect(second).toEqual(first);
     expect(batchMocks.randomRequestId.mock.calls.length).toBe(randomCalls);
+  });
+
+  it("paginates batch history while retaining the current batch detail", async () => {
+    const first = batch();
+    const second = { ...batch(), id: "91000000-0000-4000-8000-000000000002" };
+    batchMocks.listBatches.mockImplementation(async (offset: number) => offset === 1
+      ? { items: [second], total: 2, limit: 1, offset: 1 }
+      : { items: [first], total: 2, limit: 1, offset: 0 });
+    batchMocks.getBatch.mockResolvedValue(first);
+    render(<BatchStudio />);
+    await screen.findByText("批量任务");
+    await screen.findByRole("button", { name: /90000000/ });
+    fireEvent.click(screen.getByRole("button", { name: "下一页批次" }));
+    await waitFor(() => expect(batchMocks.listBatches).toHaveBeenCalledWith(1, 30, expect.any(AbortSignal)));
+    await screen.findByRole("button", { name: /91000000/ });
+  });
+
+  it("retries a failed batch history page at the requested offset", async () => {
+    const first = batch();
+    const second = { ...batch(), id: "91000000-0000-4000-8000-000000000002" };
+    batchMocks.listBatches.mockImplementationOnce(async () => ({ items: [first], total: 2, limit: 1, offset: 0 }))
+      .mockRejectedValueOnce(new Error("batch history unavailable"))
+      .mockResolvedValue({ items: [second], total: 2, limit: 1, offset: 1 });
+    render(<BatchStudio />);
+    await screen.findByText("批量任务");
+    fireEvent.click(screen.getByRole("button", { name: "下一页批次" }));
+    await screen.findByText("batch history unavailable");
+    fireEvent.click(screen.getByRole("button", { name: "重试读取批次" }));
+    await waitFor(() => expect(batchMocks.listBatches).toHaveBeenLastCalledWith(1, 30, expect.any(AbortSignal)));
   });
 });

@@ -364,6 +364,8 @@ export const ImagePlanSchema = z.object({
   purpose: z.enum(["feature", "scene"]), headline: z.string().trim().min(1).max(80),
   captions: z.array(z.string().trim().min(1).max(100)).max(3),
   prompt: z.string().trim().max(2000),
+  // Absence preserves the original request hash and historical layout meaning.
+  template: z.object({ layout: z.enum(["split", "stacked"]), version: z.literal(2) }).strict().optional(),
 }).strict();
 export const GenerateImageSchema = z.object({
   requestId: CatalogIdSchema, sourceRevisionId: CatalogIdSchema,

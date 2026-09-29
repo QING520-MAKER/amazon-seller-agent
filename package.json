@@ -22,6 +22,7 @@
     "build:web": "npm run build --workspace @asa/web",
     "dev:api": "tsx watch src/server.ts",
     "start:api": "node dist/serve.js",
+    "data": "node dist/data-cli.js",
     "dev:web": "npm run dev --workspace @asa/web",
     "dev:ui": "concurrently --kill-others --names api,web \"npm:dev:api\" \"npm:dev:web\""
   },

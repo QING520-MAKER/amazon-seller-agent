@@ -3,7 +3,8 @@ import type { ContentDetail, ContentPackage, ContentVersion, CreateContentPackag
 import { errorMessage } from "../products/api.js";
 import { getContentDetail, listContent } from "../content/api.js";
 import { getImageDetail, listImages } from "../image/api.js";
-import { createPackage, downloadPackage, getPackage, listPackages, randomRequestId } from "./api.js";
+import { DownloadLink, packageDownloadUrl } from "../shared/DownloadLink.js";
+import { createPackage, getPackage, listPackages, randomRequestId } from "./api.js";
 
 function decision(detail: { review: { decision: "approved" | "rejected" } | null; stale: boolean }) {
   return detail.review?.decision === "approved" && !detail.stale;
@@ -14,6 +15,9 @@ function PackageStatus({ value }: { value: "draft" | "approved" }) {
   return <span className={`studio-status studio-status-${value}`}>{value === "approved" ? "正式" : "草稿"}</span>;
 }
 type PendingCreate = { input: CreateContentPackage; created?: ContentPackage };
+type ContentPage = ReturnType<typeof listContent> extends Promise<infer T> ? T : never;
+type ImagePage = ReturnType<typeof listImages> extends Promise<infer T> ? T : never;
+type PackagePage = ReturnType<typeof listPackages> extends Promise<infer T> ? T : never;
 function createKey(input: Pick<CreateContentPackage, "contentVersionId" | "imageVersionIds" | "status">) {
   return JSON.stringify({ contentVersionId: input.contentVersionId, imageVersionIds: input.imageVersionIds, status: input.status });
 }
@@ -21,10 +25,15 @@ function createKey(input: Pick<CreateContentPackage, "contentVersionId" | "image
 export function PackageStudio({ product, onDirty, disabled = false, refreshKey = 0 }: { product: ProductDetail; onDirty?: (dirty: boolean) => void; disabled?: boolean; refreshKey?: number }) {
   const productId = product.product.id;
   const [contents, setContents] = useState<ContentVersion[]>([]);
+  const [contentPage, setContentPage] = useState<ContentPage>();
   const [contentDetails, setContentDetails] = useState<Record<string, ContentDetail>>({});
   const [images, setImages] = useState<ImageVersion[]>([]);
+  const [imagePage, setImagePage] = useState<ImagePage>();
   const [imageDetails, setImageDetails] = useState<Record<string, ImageDetail>>({});
   const [packages, setPackages] = useState<ContentPackage[]>([]);
+  const [packagePage, setPackagePage] = useState<PackagePage>();
+  const pageOffsets = useRef({ content: 0, image: 0, packages: 0 });
+  const requestedOffsets = useRef({ content: 0, image: 0, packages: 0 });
   const [selectedContentId, setSelectedContentId] = useState("");
   const [selectedImageIds, setSelectedImageIds] = useState<string[]>([]);
   const [status, setStatus] = useState<"draft" | "approved">("draft");
@@ -36,64 +45,74 @@ export function PackageStudio({ product, onDirty, disabled = false, refreshKey =
   const [busy, setBusy] = useState(false);
   const request = useRef<AbortController | undefined>(undefined);
   const detailRequest = useRef<AbortController | undefined>(undefined);
+  const detailSequence = useRef(0);
   const alive = useRef(true);
   const sequence = useRef(0);
-  const initialized = useRef(false);
+  const loadedProductId = useRef("");
   const userEdited = useRef(false);
   const pendingCreate = useRef<PendingCreate | undefined>(undefined);
   const draftKey = JSON.stringify({ selectedContentId, selectedImageIds, status });
   const dirty = userEdited.current && Boolean(baseDraft) && draftKey !== baseDraft;
 
   useEffect(() => { alive.current = true; return () => { alive.current = false; request.current?.abort(); detailRequest.current?.abort(); onDirty?.(false); }; }, [onDirty]);
-  useEffect(() => { initialized.current = false; userEdited.current = false; pendingCreate.current = undefined; setSelectedContentId(""); setSelectedImageIds([]); setStatus("draft"); setBaseDraft(""); setSelectedPackage(undefined); }, [productId]);
   useEffect(() => { onDirty?.(dirty); }, [dirty, onDirty]);
 
-  const load = useCallback(async () => {
+  const load = useCallback(async ({ contentOffset = pageOffsets.current.content, imageOffset = pageOffsets.current.image, packageOffset = pageOffsets.current.packages, resetSelection = false }: { contentOffset?: number; imageOffset?: number; packageOffset?: number; resetSelection?: boolean } = {}) => {
     request.current?.abort();
     const controller = new AbortController(); request.current = controller; const current = ++sequence.current;
     setLoading(true); setError("");
+    requestedOffsets.current = { content: contentOffset, image: imageOffset, packages: packageOffset };
     const results = await Promise.allSettled([
-      listContent(productId, 0, 30, controller.signal),
-      listImages(productId, 0, 30, controller.signal),
-      listPackages(productId, 0, 30, controller.signal),
+      listContent(productId, contentOffset, 30, controller.signal),
+      listImages(productId, imageOffset, 30, controller.signal),
+      listPackages(productId, packageOffset, 30, controller.signal),
     ]);
     if (!alive.current || controller.signal.aborted || current !== sequence.current) return;
     const [contentResult, imageResult, packageResult] = results;
     const rejected = results.find(item => item.status === "rejected") as PromiseRejectedResult | undefined;
     if (rejected && !(rejected.reason instanceof DOMException && rejected.reason.name === "AbortError")) setError(errorMessage(rejected.reason));
     if (contentResult?.status === "fulfilled") {
+      pageOffsets.current.content = contentResult.value.offset;
+      setContentPage(contentResult.value);
       setContents(contentResult.value.items);
       const ids = contentResult.value.items.map(item => item.id);
       const details = await Promise.allSettled(ids.map(id => getContentDetail(productId, id, controller.signal)));
       if (!alive.current || controller.signal.aborted || current !== sequence.current) return;
       const next: Record<string, ContentDetail> = {};
       details.forEach((item, index) => { const id = ids[index]; if (item.status === "fulfilled" && id) next[id] = item.value; });
-      setContentDetails(next);
-      setSelectedContentId(old => old && ids.includes(old) ? old : contentResult.value.headVersionId && ids.includes(contentResult.value.headVersionId) ? contentResult.value.headVersionId : ids[0] || "");
+      setContentDetails(old => ({ ...old, ...next }));
+      if (resetSelection) setSelectedContentId(contentResult.value.headVersionId ?? contentResult.value.items[0]?.id ?? "");
     }
     if (imageResult?.status === "fulfilled") {
+      pageOffsets.current.image = imageResult.value.offset;
+      setImagePage(imageResult.value);
       setImages(imageResult.value.items);
       const ids = imageResult.value.items.map(item => item.id);
       const details = await Promise.allSettled(ids.map(id => getImageDetail(productId, id, controller.signal)));
       if (!alive.current || controller.signal.aborted || current !== sequence.current) return;
       const next: Record<string, ImageDetail> = {};
       details.forEach((item, index) => { const id = ids[index]; if (item.status === "fulfilled" && id) next[id] = item.value; });
-      setImageDetails(next);
-      setSelectedImageIds(old => old.filter(id => ids.includes(id)));
+      setImageDetails(old => ({ ...old, ...next }));
     }
-    if (packageResult?.status === "fulfilled") setPackages(packageResult.value.items);
-    if (!initialized.current && alive.current) {
-      const initialContentId = contentResult?.status === "fulfilled" ? contentResult.value.headVersionId ?? contentResult.value.items[0]?.id ?? "" : "";
-      const initialImages = selectedImageIds;
-      setSelectedContentId(initialContentId);
-      setSelectedImageIds(initialImages);
-      setBaseDraft(JSON.stringify({ selectedContentId: initialContentId, selectedImageIds: initialImages, status: "draft" }));
-      initialized.current = true;
-    }
+    if (packageResult?.status === "fulfilled") { pageOffsets.current.packages = packageResult.value.offset; setPackagePage(packageResult.value); setPackages(packageResult.value.items); }
+    if (resetSelection && alive.current) setBaseDraft(JSON.stringify({ selectedContentId: contentResult?.status === "fulfilled" ? contentResult.value.headVersionId ?? contentResult.value.items[0]?.id ?? "" : "", selectedImageIds: [], status: "draft" }));
+    loadedProductId.current = productId;
     setLoading(false);
   }, [productId]);
 
-  useEffect(() => { void load().catch(cause => { if (alive.current) setError(errorMessage(cause)); }); return () => request.current?.abort(); }, [load, product.currentRevision.id, refreshKey]);
+  useEffect(() => {
+    const resetSelection = loadedProductId.current !== productId;
+    if (resetSelection) {
+      detailRequest.current?.abort(); detailSequence.current += 1;
+      userEdited.current = false; pendingCreate.current = undefined;
+      pageOffsets.current = { content: 0, image: 0, packages: 0 };
+      setContents([]); setContentPage(undefined); setContentDetails({});
+      setImages([]); setImagePage(undefined); setImageDetails({}); setPackages([]); setPackagePage(undefined);
+      setSelectedContentId(""); setSelectedImageIds([]); setStatus("draft"); setBaseDraft(""); setSelectedPackage(undefined);
+    }
+    void load({ contentOffset: resetSelection ? 0 : pageOffsets.current.content, imageOffset: resetSelection ? 0 : pageOffsets.current.image, packageOffset: resetSelection ? 0 : pageOffsets.current.packages, resetSelection }).catch(cause => { if (alive.current) setError(errorMessage(cause)); });
+    return () => request.current?.abort();
+  }, [load, product.product.id, product.currentRevision.id, refreshKey]);
 
   const selectedContent = useMemo(() => contentDetails[selectedContentId], [contentDetails, selectedContentId]);
   const selectedImages = useMemo(() => selectedImageIds.map(id => imageDetails[id]).filter((value): value is ImageDetail => Boolean(value)), [imageDetails, selectedImageIds]);
@@ -141,7 +160,7 @@ export function PackageStudio({ product, onDirty, disabled = false, refreshKey =
       pendingCreate.current = undefined;
       setSelectedPackage(snapshot); userEdited.current = false; setStatus(statusToCreate); setBaseDraft(JSON.stringify({ selectedContentId, selectedImageIds, status: statusToCreate }));
       setNotice(statusToCreate === "approved" ? "正式内容包已创建并读取快照。" : "草稿内容包已创建并读取快照。");
-      try { const page = await listPackages(productId, 0, 30); if (alive.current) setPackages(page.items); }
+      try { await load({ packageOffset: 0 }); }
       catch (cause) { if (alive.current) setNotice(`内容包已创建并读取快照，但历史列表刷新失败：${errorMessage(cause)}`); }
     } catch (cause) { if (alive.current) setError(errorMessage(cause)); }
     finally { if (alive.current) setBusy(false); }
@@ -154,20 +173,13 @@ export function PackageStudio({ product, onDirty, disabled = false, refreshKey =
     catch (cause) { if (alive.current && !controller.signal.aborted) setError(errorMessage(cause)); }
   }
 
-  async function download(id: string) {
-    setBusy(true); setError("");
-    try { const result = await downloadPackage(productId, id); if (!alive.current) return; const url = URL.createObjectURL(result.blob), anchor = document.createElement("a"); anchor.href = url; anchor.download = `content-package-${id}.zip`; document.body.appendChild(anchor); anchor.click(); anchor.remove(); window.setTimeout(() => URL.revokeObjectURL(url), 1000); }
-    catch (cause) { if (alive.current) setError(errorMessage(cause)); }
-    finally { if (alive.current) setBusy(false); }
-  }
-
   return <section className="studio-card package-studio">
-    <div className="studio-heading"><div><p className="products-eyebrow">内容包</p><h2>内容包工作台</h2><p>固定具体文案版本和有序图片版本。正式包创建与下载都会再次核对批准和过期状态。</p></div><button type="button" disabled={loading || busy} onClick={() => void load().catch(cause => { if (alive.current) setError(errorMessage(cause)); })}>刷新包依据</button></div>
-    {error ? <p className="products-error" role="alert">{error}</p> : null}{notice ? <p className="studio-notice" role="status">{notice}</p> : null}
+    <div className="studio-heading"><div><p className="products-eyebrow">内容包</p><h2>内容包工作台</h2><p>固定具体文案版本和有序图片版本。正式包创建与下载都会再次核对批准和过期状态。</p></div><button type="button" disabled={loading || busy} onClick={() => void load({ contentOffset: requestedOffsets.current.content, imageOffset: requestedOffsets.current.image, packageOffset: requestedOffsets.current.packages }).catch(cause => { if (alive.current) setError(errorMessage(cause)); })}>刷新包依据</button></div>
+    {error ? <p className="products-error" role="alert">{error}<button type="button" disabled={loading || busy} onClick={() => void load({ contentOffset: requestedOffsets.current.content, imageOffset: requestedOffsets.current.image, packageOffset: requestedOffsets.current.packages }).catch(cause => { if (alive.current) setError(errorMessage(cause)); })}>重试读取内容包</button></p> : null}{notice ? <p className="studio-notice" role="status">{notice}</p> : null}
     <fieldset disabled={disabled || busy}><div className="studio-columns">
-      <div><h3>选择文案版本</h3>{contents.length ? <div className="studio-choice-list">{contents.map(content => <label key={content.id} className={content.id === selectedContentId ? "selected" : ""}><input type="radio" name={`package-content-${productId}`} checked={content.id === selectedContentId} onChange={() => { userEdited.current = true; setSelectedContentId(content.id); }} /><span>v{content.versionNumber} · {sourceLabel(content.source)} {content.id === selectedContentId ? selectedContent?.stale ? "· 过期" : selectedContent?.review?.decision === "approved" ? "· 已批准" : "· 待审核" : ""}</span></label>)}</div> : <p>暂无文案候选。</p>}</div>
-      <div><h3>选择图片（按顺序，最多 9 张）</h3>{images.length ? <div className="studio-choice-list">{images.map(image => { const imageDetail = imageDetails[image.id]; const label = imageDetail ? imageDetail.stale ? "· 过期" : imageDetail.review?.decision === "approved" ? "· 已批准" : "· 待审核" : "· 读取中"; return <label key={image.id} className={selectedImageIds.includes(image.id) ? "selected" : ""}><input type="checkbox" checked={selectedImageIds.includes(image.id)} onChange={() => selectImage(image.id)} /><span>v{image.versionNumber} · {image.plan.headline} {label}</span></label>; })}</div> : <p>暂无图片候选。</p>}{selectedImageIds.length ? <ol className="studio-order-list">{selectedImageIds.map((id, index) => <li key={id}>图片 v{imageDetails[id]?.image.versionNumber ?? "?"}<button type="button" onClick={() => moveImage(index, -1)} disabled={index === 0}>上移</button><button type="button" onClick={() => moveImage(index, 1)} disabled={index === selectedImageIds.length - 1}>下移</button></li>)}</ol> : null}</div>
+      <div><h3>选择文案版本</h3>{contents.length ? <div className="studio-choice-list">{contents.map(content => <label key={content.id} className={content.id === selectedContentId ? "selected" : ""}><input type="radio" name={`package-content-${productId}`} checked={content.id === selectedContentId} onChange={() => { userEdited.current = true; setSelectedContentId(content.id); }} /><span>v{content.versionNumber} · {sourceLabel(content.source)} {content.id === selectedContentId ? selectedContent?.stale ? "· 过期" : selectedContent?.review?.decision === "approved" ? "· 已批准" : "· 待审核" : ""}</span></label>)}</div> : <p>当前页暂无文案候选。</p>}{contentPage && contentPage.total > contentPage.limit ? <div className="products-pagination"><button type="button" disabled={loading || busy || contentPage.offset === 0} onClick={() => void load({ contentOffset: Math.max(0, contentPage.offset - contentPage.limit) }).catch(cause => { if (alive.current) setError(errorMessage(cause)); })}>上一页文案候选</button><span>共 {contentPage.total} 个版本</span><button type="button" disabled={loading || busy || contentPage.offset + contentPage.limit >= contentPage.total} onClick={() => void load({ contentOffset: contentPage.offset + contentPage.limit }).catch(cause => { if (alive.current) setError(errorMessage(cause)); })}>下一页文案候选</button></div> : null}</div>
+      <div><h3>选择图片（按顺序，最多 9 张）</h3>{images.length ? <div className="studio-choice-list">{images.map(image => { const imageDetail = imageDetails[image.id]; const label = imageDetail ? imageDetail.stale ? "· 过期" : imageDetail.review?.decision === "approved" ? "· 已批准" : "· 待审核" : "· 读取中"; return <label key={image.id} className={selectedImageIds.includes(image.id) ? "selected" : ""}><input type="checkbox" checked={selectedImageIds.includes(image.id)} onChange={() => selectImage(image.id)} /><span>v{image.versionNumber} · {image.plan.headline} {label}</span></label>; })}</div> : <p>当前页暂无图片候选。</p>}{imagePage && imagePage.total > imagePage.limit ? <div className="products-pagination"><button type="button" disabled={loading || busy || imagePage.offset === 0} onClick={() => void load({ imageOffset: Math.max(0, imagePage.offset - imagePage.limit) }).catch(cause => { if (alive.current) setError(errorMessage(cause)); })}>上一页图片候选</button><span>共 {imagePage.total} 张图片</span><button type="button" disabled={loading || busy || imagePage.offset + imagePage.limit >= imagePage.total} onClick={() => void load({ imageOffset: imagePage.offset + imagePage.limit }).catch(cause => { if (alive.current) setError(errorMessage(cause)); })}>下一页图片候选</button></div> : null}{selectedImageIds.length ? <ol className="studio-order-list">{selectedImageIds.map((id, index) => <li key={id}>图片 v{imageDetails[id]?.image.versionNumber ?? "?"}<button type="button" onClick={() => moveImage(index, -1)} disabled={index === 0}>上移</button><button type="button" onClick={() => moveImage(index, 1)} disabled={index === selectedImageIds.length - 1}>下移</button></li>)}</ol> : null}</div>
     </div><div className="studio-actions"><button type="button" disabled={busy || disabled || !selectedContentId || selectedImageIds.length < 1} onClick={() => void create("draft").catch(cause => { if (alive.current) setError(errorMessage(cause)); })}>制作草稿包</button><button className="products-primary" type="button" disabled={busy || disabled || !canApprove} onClick={() => void create("approved").catch(cause => { if (alive.current) setError(errorMessage(cause)); })}>制作正式包</button>{dirty ? <span className="studio-dirty">内容包选择有未保存草稿</span> : null}</div></fieldset>
-    <div className="studio-columns"><div><h3>内容包历史</h3>{packages.length ? <ul className="studio-history-list">{packages.map(item => <li key={item.id}><button type="button" onClick={() => void viewPackage(item.id).catch(cause => { if (alive.current) setError(errorMessage(cause)); })}>包 v{item.versionNumber}</button> <PackageStatus value={item.manifest.status} /> <small>{new Date(item.createdAt).toLocaleString("zh-CN", { hour12: false })}</small><button type="button" disabled={busy} onClick={() => void download(item.id).catch(cause => { if (alive.current) setError(errorMessage(cause)); })}>下载 ZIP</button></li>)}</ul> : <p>还没有内容包。</p>}</div><div>{selectedPackage ? <article className="studio-detail"><h3>包 v{selectedPackage.versionNumber} 快照 <PackageStatus value={selectedPackage.manifest.status} /></h3><p>SKU {selectedPackage.manifest.sku} · 固定文案 v{selectedPackage.manifest.content.content.versionNumber} · {selectedPackage.manifest.images.length} 张图片</p><button type="button" disabled={busy} onClick={() => void download(selectedPackage.id).catch(cause => { if (alive.current) setError(errorMessage(cause)); })}>下载此快照 ZIP</button></article> : <p>选择历史包查看不可变快照。</p>}</div></div>
+    <div className="studio-columns"><div><h3>内容包历史</h3>{packages.length ? <ul className="studio-history-list">{packages.map(item => <li key={item.id}><button type="button" onClick={() => void viewPackage(item.id).catch(cause => { if (alive.current) setError(errorMessage(cause)); })}>包 v{item.versionNumber}</button> <PackageStatus value={item.manifest.status} /> <small>{new Date(item.createdAt).toLocaleString("zh-CN", { hour12: false })}</small><DownloadLink href={packageDownloadUrl(productId, item.id)} disabled={busy}>下载 ZIP</DownloadLink></li>)}</ul> : <p>当前页暂无内容包。</p>}{packagePage && packagePage.total > packagePage.limit ? <div className="products-pagination"><button type="button" disabled={loading || busy || packagePage.offset === 0} onClick={() => void load({ packageOffset: Math.max(0, packagePage.offset - packagePage.limit) }).catch(cause => { if (alive.current) setError(errorMessage(cause)); })}>上一页内容包</button><span>共 {packagePage.total} 个内容包</span><button type="button" disabled={loading || busy || packagePage.offset + packagePage.limit >= packagePage.total} onClick={() => void load({ packageOffset: packagePage.offset + packagePage.limit }).catch(cause => { if (alive.current) setError(errorMessage(cause)); })}>下一页内容包</button></div> : null}</div><div>{selectedPackage ? <article className="studio-detail"><h3>包 v{selectedPackage.versionNumber} 快照 <PackageStatus value={selectedPackage.manifest.status} /></h3><p>SKU {selectedPackage.manifest.sku} · 固定文案 v{selectedPackage.manifest.content.content.versionNumber} · {selectedPackage.manifest.images.length} 张图片</p><DownloadLink href={packageDownloadUrl(productId, selectedPackage.id)} disabled={busy}>下载此快照 ZIP</DownloadLink></article> : <p>选择历史包查看不可变快照。</p>}</div></div>
   </section>;
 }

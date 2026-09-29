@@ -5,7 +5,7 @@ import { ProductBriefSchema, type ImageDetail, type ImageRun, type ImageVersion,
 import { ImageStudio } from "../apps/web/src/image/ImageStudio.js";
 
 const mocks = vi.hoisted(() => ({
-  listAssets: vi.fn(), listImages: vi.fn(), listImageRuns: vi.fn(), getImageDetail: vi.fn(), generateImage: vi.fn(), reviewImage: vi.fn(), getImageBlob: vi.fn(), randomRequestId: vi.fn(() => "30000000-0000-4000-8000-000000000001"),
+  listAssets: vi.fn(), listImages: vi.fn(), listImageRuns: vi.fn(), getImageDetail: vi.fn(), generateImage: vi.fn(), reviewImage: vi.fn(), randomRequestId: vi.fn(() => "30000000-0000-4000-8000-000000000001"),
 }));
 vi.mock("../apps/web/src/products/api.js", async importOriginal => ({ ...await importOriginal<typeof import("../apps/web/src/products/api.js")>(), listAssets: mocks.listAssets }));
 vi.mock("../apps/web/src/image/api.js", async importOriginal => ({ ...await importOriginal<typeof import("../apps/web/src/image/api.js")>(), ...mocks }));
@@ -32,6 +32,70 @@ describe("image studio", () => {
     expect(screen.getByRole("button", { name: /核对任务/ })).toBeTruthy();
   });
 
+  it("starts a new request key when the plan changes after an uncertain or failed result", async () => {
+    const firstRequest = "30000000-0000-4000-8000-000000000001";
+    const secondRequest = "30000000-0000-4000-8000-000000000002";
+    mocks.randomRequestId.mockReturnValueOnce(firstRequest).mockReturnValueOnce(secondRequest);
+    mocks.generateImage.mockResolvedValue({ run, image: null, reused: false });
+    render(<ImageStudio product={product} />);
+    await screen.findByText("图片工作台");
+    fireEvent.click(screen.getByRole("button", { name: "生成本地卖点图" }));
+    await waitFor(() => expect(mocks.generateImage).toHaveBeenCalledTimes(1));
+    fireEvent.change(screen.getByLabelText("标题（≤80）"), { target: { value: "新的版式输入" } });
+    fireEvent.click(screen.getByRole("button", { name: "生成本地卖点图" }));
+    await waitFor(() => expect(mocks.generateImage).toHaveBeenCalledTimes(2));
+    expect(mocks.generateImage.mock.calls[0]?.[1].requestId).toBe(firstRequest);
+    expect(mocks.generateImage.mock.calls[1]?.[1].requestId).toBe(secondRequest);
+  });
+
+  it("requires an explicit new task for a known terminal failure", async () => {
+    const firstRequest = "30000000-0000-4000-8000-000000000001";
+    const secondRequest = "30000000-0000-4000-8000-000000000002";
+    mocks.randomRequestId.mockReturnValueOnce(firstRequest).mockReturnValueOnce(secondRequest);
+    mocks.generateImage.mockResolvedValue({ run, image: null, reused: false });
+    render(<ImageStudio product={product} />);
+    await screen.findByText("图片工作台");
+    fireEvent.click(screen.getByRole("button", { name: "生成本地卖点图" }));
+    await screen.findByRole("button", { name: "用相同输入新建任务" });
+    fireEvent.click(screen.getByRole("button", { name: "生成本地卖点图" }));
+    expect(mocks.generateImage).toHaveBeenCalledTimes(1);
+    fireEvent.click(screen.getByRole("button", { name: "用相同输入新建任务" }));
+    await waitFor(() => expect(mocks.generateImage).toHaveBeenCalledTimes(2));
+    expect(mocks.generateImage.mock.calls[0]?.[1].requestId).toBe(firstRequest);
+    expect(mocks.generateImage.mock.calls[1]?.[1].requestId).toBe(secondRequest);
+  });
+
+  it("keeps the successful request key until detail confirmation and reconciles without reposting", async () => {
+    const succeededRun = { ...run, status: "succeeded" as const, imageVersionId: imageId, errorCode: null, errorMessage: null };
+    mocks.listImageRuns.mockResolvedValue({ items: [], total: 0, limit: 20, offset: 0 });
+    mocks.generateImage.mockResolvedValue({ run: succeededRun, image, reused: false });
+    mocks.getImageDetail.mockRejectedValueOnce(new Error("详情暂不可用")).mockResolvedValue(detail);
+    render(<ImageStudio product={product} />);
+    await screen.findByText("图片工作台");
+    fireEvent.click(screen.getByRole("button", { name: "生成本地卖点图" }));
+    await screen.findByText(/详情读取未确认/);
+    expect(mocks.generateImage).toHaveBeenCalledTimes(1);
+    expect(screen.getByRole("button", { name: /核对任务/ })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: /核对任务/ }));
+    await screen.findByText("已读取服务器任务记录与真实候选状态。");
+    expect(mocks.generateImage).toHaveBeenCalledTimes(1);
+    expect(mocks.listImageRuns).toHaveBeenCalledTimes(1);
+    expect(screen.queryByRole("button", { name: /核对任务/ })).toBeNull();
+  });
+
+  it("keeps an uncertain POST on the same request key for later reconciliation", async () => {
+    const requestId = "30000000-0000-4000-8000-000000000001";
+    mocks.generateImage.mockRejectedValueOnce(new Error("连接中断")).mockResolvedValue({ run, image: null, reused: false });
+    render(<ImageStudio product={product} />);
+    await screen.findByText("图片工作台");
+    fireEvent.click(screen.getByRole("button", { name: "生成本地卖点图" }));
+    await screen.findByText("连接中断");
+    fireEvent.click(screen.getByRole("button", { name: /生成本地卖点图/ }));
+    await waitFor(() => expect(mocks.generateImage).toHaveBeenCalledTimes(2));
+    expect(mocks.generateImage.mock.calls[0]?.[1].requestId).toBe(requestId);
+    expect(mocks.generateImage.mock.calls[1]?.[1].requestId).toBe(requestId);
+  });
+
   it("reads real stale detail after a successful candidate and disables approval", async () => {
     mocks.listImages.mockResolvedValue({ items: [image], total: 1, limit: 30, offset: 0 });
     mocks.getImageDetail.mockResolvedValue(detail);
@@ -41,6 +105,7 @@ describe("image studio", () => {
     fireEvent.click(screen.getByRole("button", { name: /候选 v1/ }));
     await screen.findByText(/过期：SOURCE_REVISION_CHANGED/);
     expect((screen.getByRole("button", { name: "批准此候选" }) as HTMLButtonElement).disabled).toBe(true);
+    expect(screen.getByRole("link", { name: "下载 PNG" }).getAttribute("href")).toBe(`/api/products/${productId}/images/${imageId}/content?download=1`);
   });
 
   it("allows rejecting a stale candidate and keeps review notes while refreshing", async () => {
@@ -73,5 +138,31 @@ describe("image studio", () => {
     await screen.findByText(/当前依据未发现过期原因/);
     fireEvent.change(screen.getByLabelText("审核备注"), { target: { value: "已核对实物" } });
     expect((screen.getByRole("button", { name: "批准此候选" }) as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it("pages assets and candidates independently while preserving drafts and selected review detail", async () => {
+    const asset2 = { ...asset, id: "40000000-0000-4000-8000-000000000002", originalName: "second.png" };
+    const image2 = { ...image, id: "50000000-0000-4000-8000-000000000002", versionNumber: 2, original: asset2 };
+    const detail2 = { ...detail, image: image2, stale: false, staleReasons: [] };
+    mocks.listAssets.mockImplementation((_id: string, _state: string, offset: number) => Promise.resolve({ items: [offset ? asset2 : asset], total: 21, limit: 20, offset }));
+    mocks.listImages.mockImplementation((_id: string, offset: number) => Promise.resolve({ items: [offset ? image2 : image], total: 21, limit: 20, offset }));
+    mocks.listImageRuns.mockResolvedValue({ items: [], total: 0, limit: 20, offset: 0 });
+    mocks.getImageDetail.mockImplementation((_id: string, imageId: string) => Promise.resolve(imageId === image2.id ? detail2 : detail));
+    render(<ImageStudio product={product} />);
+    await screen.findByRole("button", { name: /候选 v1/ });
+    fireEvent.change(screen.getByLabelText("标题（≤80）"), { target: { value: "未保存布局草稿" } });
+    fireEvent.click(screen.getByRole("button", { name: /候选 v1/ }));
+    await screen.findByText(/当前依据未发现过期原因|过期/);
+    fireEvent.change(screen.getByLabelText("审核备注"), { target: { value: "保留这条审核备注" } });
+    const nextButtons = screen.getAllByRole("button", { name: "下一页" });
+    fireEvent.click(nextButtons[0]!);
+    await waitFor(() => expect(mocks.listAssets).toHaveBeenCalledWith(productId, "active", 20, expect.anything()));
+    expect((screen.getByLabelText("标题（≤80）") as HTMLInputElement).value).toBe("未保存布局草稿");
+    expect((screen.getByLabelText("审核备注") as HTMLTextAreaElement).value).toBe("保留这条审核备注");
+    fireEvent.click(screen.getAllByRole("button", { name: "下一页" })[1]!);
+    await waitFor(() => expect(mocks.listImages).toHaveBeenCalledWith(productId, 20, 20, expect.anything()));
+    await screen.findByRole("button", { name: /候选 v2/ });
+    expect((screen.getByLabelText("标题（≤80）") as HTMLInputElement).value).toBe("未保存布局草稿");
+    expect((screen.getByLabelText("审核备注") as HTMLTextAreaElement).value).toBe("保留这条审核备注");
   });
 });

@@ -17,6 +17,7 @@ const asset: OriginalAsset = { id: "50000000-0000-4000-8000-000000000001", produ
 const product: ProductDetail = { product: { id: productId, workspaceId: "local", sku: "SKU-A", currentRevisionId: sourceRevisionId, createdAt: "2026-09-20T00:00:00.000Z", updatedAt: "2026-09-20T00:00:00.000Z" }, currentRevision: { id: sourceRevisionId, productId, revisionNumber: 1, brief: ProductBriefSchema.parse({ name: "真实商品" }), sourceNote: "manual", createdAt: "2026-09-20T00:00:00.000Z" }, missingFields: [] };
 const content: ContentVersion = { id: contentId, productId, sourceRevisionId, versionNumber: 1, parentVersionId: null, marketplace: "us", language: "en_US", keywords: ["real"], copy: { title: "Real product", itemHighlights: "Real highlight", bullets: ["One", "Two", "Three", "Four", "Five"], description: "Real description", backendSearchTerms: ["real"] }, coverage: { rows: [], coveragePct: 100, uncovered: [] }, evidence: [], rulesVersion: "test", source: "template", model: null, generationRunId: null, createdAt: "2026-09-20T00:00:00.000Z" };
 const image: ImageVersion = { id: imageId, productId, sourceRevisionId, versionNumber: 1, original: asset, plan: { purpose: "feature", headline: "Real product", captions: [], prompt: "" }, evidence: [], mode: "local", provider: "local", model: null, mimeType: "image/png", width: 1600, height: 1600, sizeBytes: 1000, sha256: "b".repeat(64), generationRunId: "60000000-0000-4000-8000-000000000001", createdAt: "2026-09-20T00:00:00.000Z" };
+const image2: ImageVersion = { ...image, id: "40000000-0000-4000-8000-000000000002", versionNumber: 2, plan: { ...image.plan, headline: "Second product view" } };
 const contentDetail: ContentDetail = { content, review: null, stale: false, staleReasons: [] };
 const imageDetail: ImageDetail = { image, review: null, stale: false, staleReasons: [] };
 const pack = (status: "draft" | "approved" = "draft"): ContentPackage => ({ id: "90000000-0000-4000-8000-000000000001", productId, requestId: "80000000-0000-4000-8000-000000000001", versionNumber: 1, createdAt: "2026-09-20T00:00:00.000Z", manifest: { schemaVersion: 1, sku: "SKU-A", status, content: contentDetail, images: [imageDetail] } });
@@ -66,5 +67,40 @@ describe("package studio", () => {
     await waitFor(() => expect(packageMocks.createPackage).toHaveBeenCalledTimes(2));
     expect(packageMocks.createPackage.mock.calls[0]?.[1].requestId).toBe("80000000-0000-4000-8000-000000000002");
     expect(packageMocks.createPackage.mock.calls[1]?.[1].requestId).toBe("80000000-0000-4000-8000-000000000002");
+  });
+
+  it("keeps an ordered image selection when paging image candidates", async () => {
+    imageMocks.listImages.mockImplementation(async (_id: string, offset: number) => offset === 30
+      ? { items: [image2], total: 31, limit: 30, offset: 30 }
+      : { items: [image], total: 31, limit: 30, offset: 0 });
+    imageMocks.getImageDetail.mockImplementation(async (_id: string, id: string) => ({ image: id === image2.id ? image2 : image, review: null, stale: false, staleReasons: [] }));
+    render(<PackageStudio product={product} />);
+    await screen.findByText(/v1 · 本地模板/);
+    fireEvent.click(screen.getByRole("checkbox"));
+    fireEvent.click(screen.getByRole("button", { name: "下一页图片候选" }));
+    await waitFor(() => expect(imageMocks.listImages).toHaveBeenCalledWith(productId, 30, 30, expect.any(AbortSignal)));
+    await screen.findByText(/v2 · Second product view/);
+    fireEvent.click(screen.getByRole("checkbox"));
+    expect(screen.getByText("图片 v1")).toBeTruthy();
+    expect(screen.getByText("图片 v2")).toBeTruthy();
+  });
+
+  it("paginates package history while preserving the selected snapshot detail", async () => {
+    const first = pack();
+    const second = { ...pack(), id: "90000000-0000-4000-8000-000000000002", versionNumber: 2 };
+    packageMocks.listPackages.mockImplementation(async (_id: string, offset: number) => offset === 1
+      ? { items: [second], total: 2, limit: 1, offset: 1 }
+      : { items: [first], total: 2, limit: 1, offset: 0 });
+    packageMocks.getPackage.mockImplementation(async (_id: string, id: string) => id === second.id ? second : first);
+    render(<PackageStudio product={product} />);
+    await screen.findByText("内容包工作台");
+    await waitFor(() => expect(packageMocks.listPackages).toHaveBeenCalledWith(productId, 0, 30, expect.any(AbortSignal)));
+    const downloadLink = await screen.findByRole("link", { name: "下载 ZIP" });
+    expect(downloadLink.getAttribute("href")).toBe(`/api/products/${productId}/packages/${first.id}/download`);
+    fireEvent.click(screen.getByRole("button", { name: "下一页内容包" }));
+    await waitFor(() => expect(packageMocks.listPackages).toHaveBeenCalledWith(productId, 1, 30, expect.any(AbortSignal)));
+    await screen.findByRole("button", { name: "包 v2" });
+    fireEvent.click(screen.getByRole("button", { name: "包 v2" }));
+    await screen.findByText(/包 v2 快照/);
   });
 });

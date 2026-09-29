@@ -17,6 +17,7 @@ const safeMessages: Record<string, string> = {
   IMAGE_MODE_UNSUPPORTED: "当前图片模式暂不可用，请选择本地卖点图或配置图片服务商。",
   IMAGE_OUTPUT_INVALID: "图片服务返回内容未通过完整图片校验。",
   IMAGE_OUTPUT_TOO_LARGE: "图片服务返回内容超过本地大小限制。",
+  IMAGE_TEXT_OVERFLOW: "文字超出版式安全区域，请缩短文字或切换版式后重新制作。",
   IMAGE_INTERRUPTED: "图片制作被中断，结果未知；请使用新的请求 ID 重试。",
   KNOWLEDGE_NOT_APPROVED: "所选知识必须是该商品当前已确认的版本。",
   IMAGE_ORIGINAL_UNAVAILABLE: "所选原图当前不可用，请重新选择原图。",
