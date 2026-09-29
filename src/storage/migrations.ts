@@ -1,4 +1,9 @@
 import type Database from "better-sqlite3";
+import { knowledgeMigrationSQL } from "../knowledge/migration.js";
+import { knowledgeCreateRequestMigrationSQL } from "../knowledge/request-migration.js";
+import { batchMigrationSQL } from "../batch/migration.js";
+import { imageMigrationSQL } from "../image/migration.js";
+import { packageMigrationSQL } from "../packages/migration.js";
 
 const initial = [
   "CREATE TABLE products (",
@@ -32,21 +37,91 @@ const initial = [
   "CREATE TRIGGER products_no_delete BEFORE DELETE ON products BEGIN SELECT RAISE(ABORT, 'products cannot be deleted'); END;",
 ].join("\n");
 
+/** Historical v1 DDL, exposed for real upgrade-fixture verification. */
+export const catalogV1MigrationSQL = initial;
+
+// Keep the v1 DDL above byte-for-byte stable. Content studio tables are added
+// by an ordered migration so existing products and originals remain intact.
+const contentStudio = [
+  "CREATE TABLE content_versions (",
+  " id TEXT PRIMARY KEY, product_id TEXT NOT NULL REFERENCES products(id),",
+  " source_revision_id TEXT NOT NULL, version_number INTEGER NOT NULL CHECK(version_number >= 1),",
+  " parent_version_id TEXT, marketplace TEXT NOT NULL CHECK(marketplace='us'), language TEXT NOT NULL CHECK(language='en_US'),",
+  " keywords_json TEXT NOT NULL CHECK(json_valid(keywords_json)), copy_json TEXT NOT NULL CHECK(json_valid(copy_json)),",
+  " coverage_json TEXT NOT NULL CHECK(json_valid(coverage_json)), evidence_json TEXT NOT NULL CHECK(json_valid(evidence_json)),",
+  " rules_version TEXT NOT NULL, source TEXT NOT NULL CHECK(source IN ('template','model','manual')), model TEXT,",
+  " generation_run_id TEXT, created_at TEXT NOT NULL,",
+  " UNIQUE(product_id, id), UNIQUE(product_id, marketplace, language, version_number),",
+  " FOREIGN KEY(product_id, source_revision_id) REFERENCES product_revisions(product_id, id),",
+  " FOREIGN KEY(product_id, parent_version_id) REFERENCES content_versions(product_id, id)",
+  ");",
+  "CREATE TRIGGER content_versions_no_update BEFORE UPDATE ON content_versions BEGIN SELECT RAISE(ABORT, 'content version is immutable'); END;",
+  "CREATE TRIGGER content_versions_no_delete BEFORE DELETE ON content_versions BEGIN SELECT RAISE(ABORT, 'content versions are immutable'); END;",
+  "CREATE INDEX content_versions_product ON content_versions(product_id, marketplace, language, version_number DESC);",
+  "CREATE TABLE content_heads (",
+  " product_id TEXT NOT NULL REFERENCES products(id), marketplace TEXT NOT NULL CHECK(marketplace='us'), language TEXT NOT NULL CHECK(language='en_US'),",
+  " head_version_id TEXT,",
+  " PRIMARY KEY(product_id, marketplace, language),",
+  " FOREIGN KEY(product_id, head_version_id) REFERENCES content_versions(product_id, id)",
+  ");",
+  "CREATE TABLE content_runs (",
+  " id TEXT PRIMARY KEY, product_id TEXT NOT NULL REFERENCES products(id), request_id TEXT NOT NULL,",
+  " source_revision_id TEXT NOT NULL, mode TEXT NOT NULL CHECK(mode IN ('template','model')),",
+  " input_hash TEXT NOT NULL, input_json TEXT NOT NULL CHECK(json_valid(input_json)),",
+  " status TEXT NOT NULL CHECK(status IN ('running','succeeded','failed','interrupted')),",
+  " content_version_id TEXT, error_code TEXT, error_message TEXT, started_at TEXT NOT NULL, finished_at TEXT,",
+  " UNIQUE(product_id, request_id),",
+  " FOREIGN KEY(product_id, source_revision_id) REFERENCES product_revisions(product_id, id),",
+  " FOREIGN KEY(product_id, content_version_id) REFERENCES content_versions(product_id, id)",
+  ");",
+  "CREATE INDEX content_runs_product ON content_runs(product_id, started_at DESC);",
+  "CREATE TABLE content_reviews (",
+  " id TEXT PRIMARY KEY, product_id TEXT NOT NULL REFERENCES products(id), content_version_id TEXT NOT NULL,",
+  " decision TEXT NOT NULL CHECK(decision IN ('approved','rejected')), notes TEXT NOT NULL, created_at TEXT NOT NULL,",
+  " FOREIGN KEY(product_id, content_version_id) REFERENCES content_versions(product_id, id)",
+  ");",
+  "CREATE TRIGGER content_reviews_no_update BEFORE UPDATE ON content_reviews BEGIN SELECT RAISE(ABORT, 'content review is immutable'); END;",
+  "CREATE TRIGGER content_reviews_no_delete BEFORE DELETE ON content_reviews BEGIN SELECT RAISE(ABORT, 'content reviews are immutable'); END;",
+  "CREATE INDEX content_reviews_version ON content_reviews(product_id, content_version_id, created_at DESC);",
+].join("\n");
+
+const migrations: Record<number, string> = { 1: initial, 2: contentStudio, 3: knowledgeMigrationSQL, 4: batchMigrationSQL, 5: imageMigrationSQL, 6: packageMigrationSQL, 7: knowledgeCreateRequestMigrationSQL };
+export const CURRENT_SCHEMA_VERSION = 7;
+
+function validateMigrationHistory(db: Database.Database, versions: { version: number }[], pragmaVersion: number) {
+  if (!versions.length || pragmaVersion !== versions[versions.length - 1]!.version) {
+    throw new Error("不支持此数据库迁移版本；原有数据保持不变。");
+  }
+  for (let index = 0; index < versions.length; index++) {
+    if (versions[index]!.version !== index + 1 || !migrations[versions[index]!.version]) {
+      throw new Error("不支持此数据库迁移版本；原有数据保持不变。");
+    }
+  }
+}
+
 export function migrate(db: Database.Database) {
   const hasTable = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='schema_migrations'").get();
   if (hasTable) {
     const versions = db.prepare("SELECT version FROM schema_migrations ORDER BY version").all() as { version: number }[];
-    if (versions.length !== 1 || versions[0]?.version !== 1 || db.pragma("user_version", { simple: true }) !== 1) {
-      throw new Error("不支持此数据库迁移版本；原有数据保持不变。");
-    }
+    validateMigrationHistory(db, versions, db.pragma("user_version", { simple: true }) as number);
+    if (versions.length === CURRENT_SCHEMA_VERSION) return;
+    db.transaction(() => {
+      for (let next = versions.length + 1; next <= CURRENT_SCHEMA_VERSION; next++) {
+        db.exec(migrations[next]!);
+        db.prepare("INSERT INTO schema_migrations VALUES(?, ?)").run(next, new Date().toISOString());
+        db.pragma("user_version = " + next);
+      }
+    }).immediate();
     return;
   }
   const existing = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'").all();
   if (existing.length || db.pragma("user_version", { simple: true }) !== 0) throw new Error("未识别的已有数据库，拒绝重建。");
   db.transaction(() => {
     db.exec("CREATE TABLE schema_migrations(version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL)");
-    db.exec(initial);
-    db.prepare("INSERT INTO schema_migrations VALUES(1, ?)").run(new Date().toISOString());
-    db.pragma("user_version = 1");
+    for (let next = 1; next <= CURRENT_SCHEMA_VERSION; next++) {
+      db.exec(migrations[next]!);
+      db.prepare("INSERT INTO schema_migrations VALUES(?, ?)").run(next, new Date().toISOString());
+      db.pragma("user_version = " + next);
+    }
   }).immediate();
 }

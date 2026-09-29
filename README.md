@@ -3,7 +3,21 @@
 TypeScript + **LangGraph.js** CLI for Amazon seller **keyword research** and **listing create/audit**.  
 Phase 1 implements public autocomplete research and local template-based listing creation/auditing, with frozen Zod contracts.
 
-项目业务介绍、图文运营方向与切片 3—9 路线见 [PROJECT_BRIEF.md](PROJECT_BRIEF.md)；网页端 Astra 与本地 Codex 的协作启动文字和交接格式见 [ASTRA_COLLABORATION.md](ASTRA_COLLABORATION.md)。后续路线为规划，以下仍描述已实现能力。
+项目业务介绍见 [PROJECT_BRIEF.md](PROJECT_BRIEF.md)。2026-09-29 已实现本地图文工作台 S4—S7：知识、文案、批量任务、本地卖点图和图文交付包；外部图片服务、多站点本地化、Amazon 发布仍待后续接入。最新验收和限制见 [HANDOFF_STUDIO.md](HANDOFF_STUDIO.md)。
+
+## 本地图文工作台（S4—S7）
+
+启动 `npm run dev:ui`，在商品详情中依次使用以下功能：
+
+1. 录入商品事实、原图与知识。知识支持手动输入、UTF-8 `.txt` / `.md` 导入、搜索、版本历史和人工确认；每条知识限定当前商品，最多选择 20 条已确认版本作为依据。
+2. 输入或从关键词研究选择真实关键词，生成 US 英文模板文案；编辑保存新版本，再人工批准或退回。标题、Item Highlights、五点、描述、后台词分别校验。AI 模式仅在服务端明确配置后调用。
+3. 选择原图、标题和最多三条文字，生成真实 1600×1600 PNG 卖点图；并排核对原图与候选，批准具体版本。本地排版保留产品原图，不生成新场景。场景模式提供适配接口，未配置时会记录失败原因。
+4. 选择具体文案、图片版本和图片顺序，制作草稿或正式包。ZIP 含文案、PNG/JPEG、固定依据清单与审核快照。正式创建及下载都会重查审核和依据是否有效，旧包不会跟随最新文案变化。
+5. “批量任务”支持最多 20 个商品的逐项模板/模型任务，以及 JSON 商品导入。创建和执行分开；失败项通过明确新建批次重试。重启不自动重放可能收费的请求。导入结构见 [examples/product_import.json](examples/product_import.json)，请替换占位资料。
+
+本地模板和排版不需要生成服务 API。文字/图片适配说明见 [PROVIDER_ADAPTERS.md](docs/architecture/PROVIDER_ADAPTERS.md)。开发用 Astra/Luna 配置与产品运行时 API 相互独立；不可把 Codex 登录权限当作产品生成额度。
+
+工程设计见 [CONTENT_STUDIO.md](docs/architecture/CONTENT_STUDIO.md)，[协作规范](docs/agents/collaboration.md)和[项目 skills](docs/agents/skills.md)，[GitHub 固定提交与许可证核查](docs/research/OPEN_SOURCE_REFERENCES.md)。本轮借鉴结构和设计，没有复制上游源码或引入额外运行时。
 
 ## First-step summary
 
@@ -97,7 +111,7 @@ npm run start:api
 
 ### 数据目录与停服备份
 
-`ASA_DATA_DIR` 可放在 `.env` 或进程环境变量，推荐本机 E 盘普通目录。未配置时使用应用根目录的 `data`，与启动 cwd 无关。启动日志显示实际路径。目录包含 `catalog.sqlite`、`originals/<productId>/<assetId>.jpg|png`、`tmp`、`recovery`，不能作为静态网站暴露，也不要放到网络共享或同步目录。
+`ASA_DATA_DIR` 可放在 `.env` 或进程环境变量，推荐本机 E 盘普通目录。未配置时使用应用根目录的 `data`，与启动 cwd 无关。启动日志显示实际路径。目录包含 `catalog.sqlite`、`originals/<productId>/<assetId>.jpg|png`、`derived/<productId>/<imageId>.jpg|png`、`tmp`、`recovery`，不能作为静态网站暴露，也不要放到网络共享或同步目录。知识、文案、任务、审核、内容包清单在 SQLite 内；备份必须包含整个目录及派生图片。当前数据库 schema v7；旧库依次事务升级，未知版本拒绝，升级失败保留原数据。升级前按下面步骤备份；新库不能交给只认识旧 schema 的旧版本程序。
 
 正常停服：在 `npm run start:api` 的窗口输入 **`stop` 后回车**。等待 `Storage closed; safe to back up the complete data directory.` 和进程退出。应用会拒绝新业务请求、等待在途操作、checkpoint/关闭数据库，最后释放端口。
 

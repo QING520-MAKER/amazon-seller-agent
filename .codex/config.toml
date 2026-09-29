@@ -1,0 +1,10 @@
+# Trusted repository defaults. These describe future sessions opened for this
+# project; they do not prove that the already-running parent session switched.
+model = "gpt-6-astra"
+model_reasoning_effort = "ultra"
+
+[agents]
+enabled = true
+max_concurrent_threads_per_session = 3
+default_subagent_model = "gpt-5.6-luna"
+default_subagent_reasoning_effort = "xhigh"

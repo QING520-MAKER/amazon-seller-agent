@@ -1,0 +1,18 @@
+{
+  "items": [
+    {
+      "sku": "YOUR-SKU-001",
+      "brief": {
+        "name": "Replace with your product name",
+        "brand": "",
+        "attributes": [],
+        "features": [],
+        "audience": "",
+        "useCases": [],
+        "included": [],
+        "tone": "professional"
+      },
+      "sourceNote": "Replace with the source of your actual product facts before importing."
+    }
+  ]
+}

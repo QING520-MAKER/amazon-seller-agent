@@ -28,7 +28,8 @@ function checkPngChunks(bytes: Buffer) {
   if (!end) throw invalidImage();
 }
 
-async function inspectImage(bytes: Buffer) {
+/** Shared decoder validation for original and derived assets; never trusts a filename. */
+export async function inspectImage(bytes: Buffer) {
   if (!bytes.length) throw new CatalogError(422, "INVALID_IMAGE", "文件为空，请选择有效的 JPEG/PNG。");
   const png = bytes.subarray(0, 8).equals(pngSignature);
   const jpeg = bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff;
@@ -60,7 +61,8 @@ export class OriginalFiles {
       await this.checkedPath(directory);
     }
   }
-  private async checkedPath(key: string) {
+  /** Internal storage modules only: rejects escapes, symlinks, and external junctions. */
+  async checkedPath(key: string) {
     const target = resolve(this.root, key);
     const rel = relative(this.root, target);
     if (!rel || rel.startsWith("..") || isAbsolute(rel)) throw new CatalogError(500, "ASSET_FILE_CORRUPT", "素材存储位置无效，请检查本地存储。");

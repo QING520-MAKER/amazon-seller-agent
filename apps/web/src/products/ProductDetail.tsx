@@ -5,6 +5,10 @@ import { MissingFields, RevisionFacts, formatTime } from "./shared.js";
 import { ProductForm } from "./ProductForm.js";
 import { OriginalAssets } from "./OriginalAssets.js";
 import type { Uploads } from "./useUploads.js";
+import { ContentStudio } from "../content/ContentStudio.js";
+import { KnowledgePanel } from "../knowledge/KnowledgePanel.js";
+import { ImageStudio } from "../image/ImageStudio.js";
+import { PackageStudio } from "../packages/PackageStudio.js";
 
 function History({ product, revisionChanged }: { product: Detail; revisionChanged: string }) {
   const [items, setItems] = useState<Pick<ProductRevision, "id" | "createdAt" | "revisionNumber">[]>([]);
@@ -51,6 +55,10 @@ export function ProductDetail({ productId, uploads, navigate, onDirty }: {
 }) {
   const [data, setData] = useState<Detail>(), [error, setError] = useState(""), [editing, setEditing] = useState(false);
   const [reload, setReload] = useState(0);
+  const [productDirty, setProductDirty] = useState(false), [contentDirty, setContentDirty] = useState(false);
+  const [knowledgeDirty, setKnowledgeDirty] = useState(false), [imageDirty, setImageDirty] = useState(false), [packageDirty, setPackageDirty] = useState(false);
+  const [selectedKnowledgeRevisionIds, setSelectedKnowledgeRevisionIds] = useState<string[]>([]);
+  const dependentDirty = contentDirty || knowledgeDirty || imageDirty || packageDirty;
   const seq = useRef(0);
   const request = useRef<AbortController | undefined>(undefined);
   const acceptDetail = useCallback((result: Detail) => {
@@ -60,6 +68,8 @@ export function ProductDetail({ productId, uploads, navigate, onDirty }: {
     setError(""); setData(result);
   }, []);
   const changed = useCallback(() => setReload(v => v + 1), []);
+  useEffect(() => { onDirty(productDirty || contentDirty || knowledgeDirty || imageDirty || packageDirty); }, [contentDirty, imageDirty, knowledgeDirty, onDirty, packageDirty, productDirty]);
+  useEffect(() => () => onDirty(false), [onDirty]);
   useEffect(() => {
     const controller = new AbortController(), token = ++seq.current;
     request.current = controller;
@@ -75,10 +85,14 @@ export function ProductDetail({ productId, uploads, navigate, onDirty }: {
     {!data ? !error && <p role="status">正在读取商品…</p> : <>
       <header className="products-page-heading"><div><p className="products-eyebrow">SKU · {data.product.sku}</p><h1>{data.currentRevision.brief.name}</h1>
         <p>资料 v{data.currentRevision.revisionNumber} · 最近更新 {formatTime(data.product.updatedAt)}</p></div>
-        {!editing ? <button className="products-primary" onClick={() => setEditing(true)}>编辑资料</button> : null}</header>
+         <div className="products-heading-actions">{!editing ? <><button type="button" disabled={dependentDirty} title={dependentDirty ? "请先完成或取消文案、知识、图片或内容包草稿" : undefined} onClick={changed}>刷新工作区依据</button><button className="products-primary" disabled={dependentDirty} title={dependentDirty ? "请先完成或取消文案、知识、图片或内容包草稿" : undefined} onClick={() => setEditing(true)}>编辑资料</button></> : null}</div></header>
       <div className="products-info"><MissingFields fields={data.missingFields} /><p>保存不代表事实已核验或审核通过。</p></div>
-      {editing ? <ProductForm product={data} onDirty={onDirty} navigate={navigate} onCancel={() => setEditing(false)}
-        onReloaded={acceptDetail} onSaved={result => { acceptDetail(result); setEditing(false); }} /> : <section className="products-card"><h2>当前资料</h2><RevisionFacts revision={data.currentRevision} /></section>}
+      {editing ? <ProductForm product={data} onDirty={setProductDirty} navigate={navigate} onCancel={() => { setProductDirty(false); setEditing(false); }}
+         onReloaded={acceptDetail} onSaved={result => { acceptDetail(result); setProductDirty(false); setEditing(false); }} /> : <section className="products-card"><h2>当前资料</h2><RevisionFacts revision={data.currentRevision} /></section>}
+      <KnowledgePanel product={data} selectedRevisionIds={selectedKnowledgeRevisionIds} onSelectionChange={setSelectedKnowledgeRevisionIds} onDirty={setKnowledgeDirty} disabled={editing} />
+      <ContentStudio product={data} knowledgeRevisionIds={selectedKnowledgeRevisionIds} onDirty={setContentDirty} disabled={editing} />
+      <ImageStudio product={data} knowledgeRevisionIds={selectedKnowledgeRevisionIds} onDirty={setImageDirty} disabled={editing} refreshKey={reload} />
+      <PackageStudio product={data} onDirty={setPackageDirty} disabled={editing} refreshKey={reload} />
       <History product={data} revisionChanged={data.currentRevision.id} />
       <OriginalAssets productId={productId} uploads={uploads} onChanged={changed} />
     </>}

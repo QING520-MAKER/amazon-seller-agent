@@ -4,6 +4,11 @@ import { sellerGraph } from "../graph/index.js";
 import type { AgentUpdate } from "../graph/state.js";
 import { getMarketplace } from "../marketplace.js";
 import { createCatalogRoutes } from "./catalog-routes.js";
+import { createContentRoutes } from "./content-routes.js";
+import { createKnowledgeRoutes } from "../knowledge/routes.js";
+import { createBatchRoutes } from "../batch/routes.js";
+import { createImageRoutes } from "../image/routes.js";
+import { createPackageRoutes } from "../packages/routes.js";
 import type { CatalogService } from "../catalog/service.js";
 import {
   ListingCreateRequestSchema,
@@ -98,7 +103,12 @@ export function createApp(options: { invoke?: InvokeGraph; catalog?: CatalogServ
   }
 
   app.get("/api/health", (c) => c.json({ status: "ok" }));
+  app.route("/api", createBatchRoutes(options.catalog?.batchService));
   app.route("/api/products", createCatalogRoutes(options.catalog));
+  app.route("/api/products", createContentRoutes(options.catalog));
+  app.route("/api/products", createKnowledgeRoutes(options.catalog));
+  app.route("/api/products", createImageRoutes(options.catalog?.imageService));
+  app.route("/api/products", createPackageRoutes(options.catalog?.packageService));
   app.post("/api/research", (c) => run(c, ResearchRequestSchema, (request) => ({
     ...request,
     intent: "research",

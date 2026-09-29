@@ -5,6 +5,7 @@ import { useUploads } from "./products/useUploads.js";
 import { ProductList } from "./products/ProductList.js";
 import { ProductDetail } from "./products/ProductDetail.js";
 import { ProductForm } from "./products/ProductForm.js";
+import { BatchStudio } from "./batch/BatchStudio.js";
 
 export default function App() {
   const chat = useWorkbench();
@@ -14,7 +15,7 @@ export default function App() {
   const onDirty = useCallback((value: boolean) => { dirty.current = value; }, []);
   const navigate = useCallback((path: string) => {
     if (path === currentRoute.current) return;
-    if (dirty.current && !window.confirm("有未保存的商品资料，确定离开并放弃草稿？")) return;
+    if (dirty.current && !window.confirm("有未保存的内容（商品资料、知识、文案、图片、内容包或批次），确定离开并放弃草稿？")) return;
     dirty.current = false;
     window.history.pushState(null, "", path);
     currentRoute.current = path; setRoute(path);
@@ -23,7 +24,7 @@ export default function App() {
     const changed = () => {
       const next = window.location.hash || "#/products";
       if (next === currentRoute.current) return;
-      if (dirty.current && !window.confirm("有未保存的商品资料，确定离开并放弃草稿？")) {
+      if (dirty.current && !window.confirm("有未保存的内容（商品资料、知识、文案、图片、内容包或批次），确定离开并放弃草稿？")) {
         window.history.pushState(null, "", currentRoute.current); return;
       }
       dirty.current = false; currentRoute.current = next; setRoute(next);
@@ -37,16 +38,18 @@ export default function App() {
     return () => { window.removeEventListener("hashchange", changed); window.removeEventListener("popstate", changed); window.removeEventListener("beforeunload", beforeUnload); };
   }, []);
   const workbench = route === "#/workbench";
+  const batchRoute = route === "#/batches";
   const productId = /^#\/products\/([a-f0-9-]{36})$/i.exec(route)?.[1];
   return <div className="products-app">
     <nav className="products-nav" aria-label="应用导航"><span className="products-brand"><b>ASA</b> 卖家工作空间</span>
-      <button aria-current={!workbench ? "page" : undefined} onClick={() => navigate("#/products")}>商品</button>
+      <button aria-current={!workbench && !batchRoute ? "page" : undefined} onClick={() => navigate("#/products")}>商品</button>
+      <button aria-current={batchRoute ? "page" : undefined} onClick={() => navigate("#/batches")}>批量任务</button>
       <button aria-current={workbench ? "page" : undefined} onClick={() => navigate("#/workbench")}>对话工作台</button>
       <span className="products-local">本地保存</span>
     </nav>
     {/* Keep the view mounted too: its JSON editor draft survives navigation. Portals are gated by active. */}
     <section className="products-workbench" hidden={!workbench}><Workbench chat={chat} active={workbench} /></section>
-    {!workbench ? <div className="products-surface">{route === "#/products/new"
+    {!workbench ? <div className="products-surface">{batchRoute ? <BatchStudio onDirty={onDirty} /> : route === "#/products/new"
       ? <main className="products-page"><header className="products-page-heading"><div><p className="products-eyebrow">商品资料</p><h1>新建商品</h1><p>如实记录；没有的信息可以留空。</p></div></header>
         <ProductForm key="new" onDirty={onDirty} navigate={navigate} onCancel={() => navigate("#/products")}
           onSaved={product => navigate("#/products/" + product.product.id)} /></main>
